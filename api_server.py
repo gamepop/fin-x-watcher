@@ -31,7 +31,8 @@ from tools import (
     send_alert,
     XAPIClient,
     GrokClient,
-    stream_institution_updates
+    stream_institution_updates,
+    _grok_live_search_analysis
 )
 
 load_dotenv()
@@ -271,8 +272,12 @@ async def generate_analysis_stream(institution: str) -> AsyncGenerator[str, None
     3. Running Grok sentiment analysis...
     4. Calculating risk scores...
     5. Analysis complete with results
+
+    Falls back to Grok Live Search when X API is rate limited.
     """
     timestamp = datetime.now(timezone.utc).isoformat()
+    use_fallback = False
+    rate_limit_error = None
 
     # Stage 1: Starting
     yield f"event: status\ndata: {json.dumps({'stage': 'starting', 'message': f'Starting analysis of {institution}...', 'timestamp': timestamp})}\n\n"
@@ -314,10 +319,33 @@ async def generate_analysis_stream(institution: str) -> AsyncGenerator[str, None
 
         # Stage 6: Results
         risk_level = analysis.get("risk_level", "UNKNOWN")
-        yield f"event: result\ndata: {json.dumps({'stage': 'complete', 'institution': institution, 'risk_level': risk_level, 'analysis': analysis, 'tweet_count': tweet_count, 'timestamp': timestamp})}\n\n"
+        yield f"event: result\ndata: {json.dumps({'stage': 'complete', 'institution': institution, 'risk_level': risk_level, 'analysis': analysis, 'tweet_count': tweet_count, 'data_source': 'X API v2 + Grok', 'timestamp': timestamp})}\n\n"
 
     except Exception as e:
-        yield f"event: error\ndata: {json.dumps({'stage': 'error', 'message': str(e), 'timestamp': timestamp})}\n\n"
+        error_str = str(e).lower()
+        if "rate limit" in error_str or "circuit breaker" in error_str:
+            use_fallback = True
+            rate_limit_error = str(e)
+        else:
+            yield f"event: error\ndata: {json.dumps({'stage': 'error', 'message': str(e), 'timestamp': timestamp})}\n\n"
+
+    # Fallback to Grok Live Search when X API is rate limited
+    if use_fallback:
+        yield f"event: status\ndata: {json.dumps({'stage': 'fallback', 'message': 'X API rate limited, switching to Grok Live Search...', 'timestamp': timestamp})}\n\n"
+        await asyncio.sleep(0.1)
+
+        try:
+            yield f"event: status\ndata: {json.dumps({'stage': 'grok_search', 'message': 'Grok searching X in real-time...', 'timestamp': timestamp})}\n\n"
+
+            # Run Grok live search in thread pool to not block
+            loop = asyncio.get_event_loop()
+            analysis = await loop.run_in_executor(None, _grok_live_search_analysis, institution)
+
+            risk_level = analysis.get("risk_level", "UNKNOWN")
+            yield f"event: result\ndata: {json.dumps({'stage': 'complete', 'institution': institution, 'risk_level': risk_level, 'analysis': analysis, 'data_source': 'Grok Live Search (X API fallback)', 'fallback_reason': rate_limit_error, 'timestamp': timestamp})}\n\n"
+
+        except Exception as fallback_error:
+            yield f"event: error\ndata: {json.dumps({'stage': 'error', 'message': f'Both X API and Grok fallback failed: {str(fallback_error)}', 'timestamp': timestamp})}\n\n"
 
     # Final event
     yield f"event: done\ndata: {json.dumps({'stage': 'done', 'message': 'Analysis complete', 'timestamp': timestamp})}\n\n"

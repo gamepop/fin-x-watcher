@@ -507,7 +507,26 @@ export default function Home() {
         </header>
 
         {/* Chat Interface */}
-        <main className="flex-1 overflow-hidden">
+        <main className="flex-1 overflow-hidden relative">
+          {/* Loading overlay for long operations */}
+          {isStreaming && (
+            <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm z-10 flex items-center justify-center">
+              <div className="bg-slate-800 rounded-xl p-6 shadow-2xl border border-slate-700 max-w-md">
+                <div className="flex items-center gap-4 mb-4">
+                  <div className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
+                    <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                  </div>
+                  <div>
+                    <h3 className="text-white font-semibold">Analyzing {streamingInstitution}</h3>
+                    <p className="text-slate-400 text-sm">{streamStatus}</p>
+                  </div>
+                </div>
+                <div className="w-full bg-slate-700 rounded-full h-2 overflow-hidden">
+                  <div className="bg-gradient-to-r from-blue-500 to-purple-500 h-full rounded-full animate-pulse" style={{width: '60%'}}></div>
+                </div>
+              </div>
+            </div>
+          )}
           <CopilotChat
             className="h-full"
             labels={{
