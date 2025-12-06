@@ -12,6 +12,84 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **CopilotKit + AG-UI** - Powers the interactive chat frontend
 - **Slack API** - Sends alerts for HIGH/MEDIUM risk findings
 
+## Hackathon Evaluation Criteria
+
+This project is designed to excel in the following judging dimensions. When making changes, preserve and enhance these aspects:
+
+### 1. Depth & Centrality of X API Usage
+**Goal:** Indispensable and sophisticated integration with multiple endpoints, streams, webhooks, and SDKs.
+
+**Current Implementation:**
+- **Location:** `tools.py:29-100` (XAPIClient class)
+- Uses **authenticated X API v2** with bearer token (not just public API)
+- Implements `/tweets/search/recent` endpoint with advanced query syntax
+- Includes `tweet.fields`, `expansions`, and `user.fields` for rich data
+- Rate-limit aware with decorator pattern (`@limits`)
+- Fetches author metadata, public metrics, and context annotations
+- **Enhancement opportunities:** Add streaming API, webhooks for real-time updates, additional endpoints (user timeline, lists)
+
+### 2. Real-time Responsiveness & Liveness
+**Goal:** Instantly and visibly react to events on X.
+
+**Current Implementation:**
+- **Location:** `main.py:192-257` (monitoring cycle), `frontend/src/app/page.tsx:44-47` (UI state)
+- Continuous monitoring loop checks institutions every 10 minutes (configurable)
+- 3-second inter-bank delay to respect rate limits while maintaining responsiveness
+- Frontend shows real-time risk cards with color-coded severity as agent responds
+- **Enhancement opportunities:** WebSockets/SSE for push updates, streaming API integration, sub-minute monitoring intervals
+
+### 3. Robustness under Real API Constraints
+**Goal:** Graceful auth, rate-limit strategy, error recovery, streaming resilience.
+
+**Current Implementation:**
+- **Location:** `tools.py:38-66` (rate limiting), `main.py:235-241` (error handling)
+- **Authentication:** Bearer token with URL-decode support for special characters
+- **Rate Limiting:**
+  - `@sleep_and_retry` + `@limits(calls=1500, period=900)` for Pro tier
+  - Handles 429 responses with reset time calculation
+  - 3-second delays between sequential requests
+- **Error Recovery:**
+  - Per-bank error catching in monitoring cycle (continues on failure)
+  - Cycle-level retry with 60-second backoff
+  - Graceful degradation (logs errors, returns partial results)
+- **Enhancement opportunities:** Exponential backoff, circuit breaker pattern, failover to cached data
+
+### 4. Intelligence & Value Created from X Data
+**Goal:** Creatively transform raw X objects into signals, predictions, alerts, or actions the official client can't provide.
+
+**Current Implementation:**
+- **Location:** `tools.py:165-285` (GrokAnalyzer), `agent.py:27-93` (system prompt)
+- **Value Creation:**
+  - Aggregates tweets across time (24 hours default) to detect patterns
+  - Analyzes tweet sentiment + public metrics (retweets, likes) for signal strength
+  - Classifies risk into actionable levels (HIGH/MEDIUM/LOW) with confidence scores
+  - Extracts structured `key_findings` from unstructured tweet text
+  - Identifies specific risk indicators: outages, fraud, regulatory actions, bank runs
+  - **Automated alerting** via Slack for HIGH/MEDIUM risks
+  - Tracks 7 institution categories the official X client doesn't monitor as a group
+- **Enhancement opportunities:** Trend detection, historical comparison, influential user weighting, viral risk scoring
+
+### 5. Grok Grounding & Task Specificity
+**Goal:** Tightly and traceably apply Grok to retrieved X content to produce concise, high-signal outputs.
+
+**Current Implementation:**
+- **Location:** `tools.py:165-285` (analyze_tweets method), `agent.py:27-93` (prompts)
+- **Tight Grounding:**
+  - Grok receives **exact tweet text** (not summaries) via system prompt
+  - Prompt explicitly instructs: "Analyze THESE specific tweets" with full text included
+  - Each analysis references specific tweet count analyzed
+  - Returns structured JSON with confidence scores
+- **Task Specificity:**
+  - Domain-specific prompt for financial risk (not generic sentiment)
+  - Hardcoded risk indicators: "outages", "withdrawal freeze", "hack", "SEC action"
+  - Output schema enforced: `risk_level`, `summary`, `key_findings`, `confidence`
+  - Agent prompt includes workflow: "GATHER → INTERPRET → TAKE ACTION"
+- **Traceability:**
+  - Response includes `tweet_count` for verification
+  - Key findings cite specific concerns from tweets
+  - Frontend displays "Tweets analyzed: X | Source: X API + Grok"
+- **Enhancement opportunities:** Include tweet URLs in findings, show top 3 tweets, add timestamp analysis, user verification status weighting
+
 ## Architecture
 
 The system has two main components:
