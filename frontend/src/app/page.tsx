@@ -360,6 +360,77 @@ export default function Home() {
             </div>
           )}
 
+          {/* Live Results Display */}
+          {Object.keys(liveResults).length > 0 && (
+            <div className="mb-4">
+              <h3 className="text-sm font-medium text-white mb-2 flex items-center justify-between">
+                <span>Analysis Results</span>
+                <button
+                  onClick={() => setLiveResults({})}
+                  className="text-xs text-slate-400 hover:text-white"
+                >
+                  Clear
+                </button>
+              </h3>
+              <div className="space-y-2 max-h-64 overflow-y-auto">
+                {Object.entries(liveResults).map(([institution, analysis]: [string, any]) => {
+                  const riskColors: Record<string, string> = {
+                    HIGH: "border-red-500 bg-red-900/30",
+                    MEDIUM: "border-yellow-500 bg-yellow-900/30",
+                    LOW: "border-green-500 bg-green-900/30",
+                  };
+                  const riskBadgeColors: Record<string, string> = {
+                    HIGH: "bg-red-500",
+                    MEDIUM: "bg-yellow-500",
+                    LOW: "bg-green-500",
+                  };
+                  const riskLevel = analysis?.risk_level || "LOW";
+                  return (
+                    <div
+                      key={institution}
+                      className={`p-3 rounded-lg border ${riskColors[riskLevel] || riskColors.LOW}`}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm font-medium text-white">{institution}</span>
+                        <span className={`text-xs px-2 py-0.5 rounded text-white ${riskBadgeColors[riskLevel] || riskBadgeColors.LOW}`}>
+                          {riskLevel}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-300 line-clamp-3">
+                        {analysis?.summary || "No summary available"}
+                      </p>
+                      {analysis?.key_findings && analysis.key_findings.length > 0 && (
+                        <div className="mt-2 text-xs text-slate-400">
+                          <span className="font-medium">Findings:</span>
+                          <ul className="mt-1 space-y-1">
+                            {analysis.key_findings.slice(0, 2).map((finding: string, idx: number) => (
+                              <li key={idx} className="line-clamp-2">• {finding}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {analysis?.sample_posts && analysis.sample_posts.length > 0 && (
+                        <div className="mt-2">
+                          <a
+                            href={analysis.sample_posts[0]?.match(/https:\/\/x\.com\/\S+/)?.[0] || "#"}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs text-blue-400 hover:underline"
+                          >
+                            View source on X →
+                          </a>
+                        </div>
+                      )}
+                      <div className="mt-2 text-xs text-slate-500">
+                        Confidence: {((analysis?.confidence || 0) * 100).toFixed(0)}%
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Continuous Monitoring Settings */}
           <div className="mt-6 pt-4 border-t border-slate-700">
             <h3 className="text-sm font-medium text-white mb-3">Continuous Monitoring</h3>
@@ -507,7 +578,7 @@ export default function Home() {
         </header>
 
         {/* Chat Interface */}
-        <main className="flex-1 overflow-hidden relative">
+        <main className="flex-1 overflow-hidden relative flex flex-col">
           {/* Loading overlay for long operations */}
           {isStreaming && (
             <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm z-10 flex items-center justify-center">
@@ -527,8 +598,107 @@ export default function Home() {
               </div>
             </div>
           )}
+
+          {/* Streaming Results Panel - Shows above chat when results exist */}
+          {Object.keys(liveResults).length > 0 && (
+            <div className="bg-slate-800/80 border-b border-slate-700 p-4 max-h-[50vh] overflow-y-auto">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
+                  Live Analysis Results ({Object.keys(liveResults).length})
+                </h3>
+                <button
+                  onClick={() => setLiveResults({})}
+                  className="text-xs text-slate-400 hover:text-white px-2 py-1 rounded hover:bg-slate-700"
+                >
+                  Clear All
+                </button>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+                {Object.entries(liveResults).map(([institution, analysis]: [string, any]) => {
+                  const riskColors: Record<string, { bg: string; border: string; text: string; badge: string }> = {
+                    HIGH: { bg: "bg-red-100", border: "border-red-500", text: "text-red-700", badge: "bg-red-500" },
+                    MEDIUM: { bg: "bg-yellow-100", border: "border-yellow-500", text: "text-yellow-700", badge: "bg-yellow-500" },
+                    LOW: { bg: "bg-green-100", border: "border-green-500", text: "text-green-700", badge: "bg-green-500" },
+                  };
+                  const riskLevel = analysis?.risk_level || "LOW";
+                  const colors = riskColors[riskLevel] || riskColors.LOW;
+
+                  return (
+                    <div
+                      key={institution}
+                      className={`rounded-lg border-2 ${colors.border} ${colors.bg} p-4 shadow-lg`}
+                    >
+                      {/* Header */}
+                      <div className="flex items-center justify-between mb-2">
+                        <h4 className="text-base font-bold text-gray-900">{institution}</h4>
+                        <span className={`${colors.badge} text-white text-xs font-bold px-3 py-1 rounded-full`}>
+                          {riskLevel}
+                        </span>
+                      </div>
+
+                      {/* Summary */}
+                      <p className={`${colors.text} text-sm mb-3`}>
+                        {analysis?.summary || "No summary available"}
+                      </p>
+
+                      {/* Metrics */}
+                      <div className="flex flex-wrap gap-2 mb-3 text-xs">
+                        {analysis?.confidence !== undefined && (
+                          <span className="bg-white/60 px-2 py-1 rounded text-gray-700">
+                            Confidence: {(analysis.confidence * 100).toFixed(0)}%
+                          </span>
+                        )}
+                        <span className="bg-white/60 px-2 py-1 rounded text-gray-700">
+                          Source: Grok Live Search
+                        </span>
+                      </div>
+
+                      {/* Key Findings */}
+                      {analysis?.key_findings && analysis.key_findings.length > 0 && (
+                        <div className="mb-3">
+                          <h5 className="text-xs font-semibold text-gray-600 uppercase mb-1">Key Findings</h5>
+                          <ul className="text-xs text-gray-700 space-y-1">
+                            {analysis.key_findings.slice(0, 2).map((finding: string, idx: number) => (
+                              <li key={idx} className="line-clamp-2">• {finding}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {/* Sample Posts */}
+                      {analysis?.sample_posts && analysis.sample_posts.length > 0 && (
+                        <div className="border-t border-gray-200 pt-2 mt-2">
+                          <h5 className="text-xs font-semibold text-gray-600 uppercase mb-1">Evidence from X</h5>
+                          {analysis.sample_posts.slice(0, 1).map((post: string, idx: number) => {
+                            const urlMatch = post.match(/https:\/\/x\.com\/\S+/);
+                            return (
+                              <div key={idx} className="text-xs text-gray-600">
+                                <p className="line-clamp-2 mb-1">{post.replace(/https:\/\/x\.com\/\S+/, '').trim()}</p>
+                                {urlMatch && (
+                                  <a
+                                    href={urlMatch[0]}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-blue-600 hover:underline"
+                                  >
+                                    View on X →
+                                  </a>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <CopilotChat
-            className="h-full"
+            className="flex-1 min-h-0"
             labels={{
               title: "Financial Sentinel",
               initial: selectedInstitutions.length > 0
