@@ -1,0 +1,35 @@
+# Financial Sentinel Dependencies
+# Hackathon Track: Grok × X API
+# Updated: December 2025
+
+# Google Agent Development Kit
+google-adk>=1.20.0
+
+# AG-UI Protocol for CopilotKit integration
+ag-ui-adk>=0.0.7
+
+# OpenAI SDK (for Grok API - OpenAI-compatible)
+openai>=1.50.0
+
+# X API Client
+tweepy>=4.14.0
+requests>=2.31.0
+
+# LiteLLM for ADK model routing
+litellm>=1.80.0
+
+# Slack SDK for alerting
+slack-sdk>=3.39.0
+
+# Environment management
+python-dotenv>=1.0.1
+
+# Google GenAI types (required by ADK)
+google-genai>=1.0.0
+
+# Rate limiting
+ratelimit>=2.2.1
+
+# FastAPI for AG-UI server
+fastapi>=0.115.0
+uvicorn>=0.32.0
