@@ -779,29 +779,27 @@ export default function Home() {
       });
 
       es.onerror = () => {
-        setLiveStreamError("Stream connection lost. Falling back to polling.");
-        setUsePolling(true);
+        setLiveStreamError("Stream connection lost. Attempting to continue without polling.");
         setLiveStreamActive(true);
         setLiveStreamEvents((prev: LiveStreamEvent[]) => [{
-          id: `fallback-${Date.now()}`,
+          id: `stream-error-${Date.now()}`,
           type: 'error',
           timestamp: new Date(),
-          summary: "Stream lost; switched to polling."
+          summary: "Stream error encountered; staying on stream (no polling fallback)."
         } as LiveStreamEvent, ...prev].slice(0, 200));
-        pollTweets();
       };
     } catch (e) {
-      setUsePolling(true);
+      setUsePolling(false);
+      setLiveStreamError(`Stream failed to start: ${e}`);
       setLiveStreamEvents(prev => [
         {
-          id: `poll-start-${Date.now()}`,
-          type: 'connected',
+          id: `stream-start-error-${Date.now()}`,
+          type: 'error',
           timestamp: new Date(),
-          summary: `Polling ${selectedInstitutions.length} institutions...`
+          summary: "Stream failed to start; not falling back to polling."
         } as LiveStreamEvent,
         ...prev
       ].slice(0, 100));
-      await pollTweets();
     }
   }, [selectedInstitutions, pollTweets]);
 
