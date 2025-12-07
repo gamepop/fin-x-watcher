@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Financial Sentinel** is a real-time financial risk monitoring system built for the Grok x X API hackathon. It monitors 30+ financial institutions (banks, crypto exchanges, wallets, trading apps, payment services) for idiosyncratic risks using:
+**Financial Sentinel** is a real-time financial risk monitoring system built for the Grok x X API hackathon. It monitors 80+ financial institutions (banks, crypto exchanges, wallets, trading apps, payment services) for idiosyncratic risks using:
 
-- **X API (api.x.com)** - Multi-endpoint integration for comprehensive data gathering
+- **X API (api.x.com)** - Official X SDK (`xdk`) with multi-endpoint integration
 - **Grok 4.1 Fast (api.x.ai)** - Analyzes sentiment and identifies risks with grounded traceability
 - **Google ADK v1.20+** - Orchestrates the AI agent
 - **CopilotKit + AG-UI** - Powers the interactive chat frontend
@@ -20,7 +20,7 @@ This project is designed to EXCEL in all five judging dimensions:
 **Goal:** Indispensable and sophisticated integration with multiple endpoints, streams, webhooks, and SDKs.
 
 **Implementation:**
-- **Location:** `tools.py:139-558` (XAPIClient class)
+- **Location:** `tools.py:142-742` (XAPIClient class using official `xdk` library)
 - **Multiple Endpoints Used:**
   - `/tweets/search/recent` - Primary tweet fetching with comprehensive fields
   - `/tweets/counts/recent` - Volume trend detection for spike identification
@@ -63,7 +63,7 @@ This project is designed to EXCEL in all five judging dimensions:
 **Goal:** Graceful auth, rate-limit strategy, error recovery, streaming resilience.
 
 **Implementation:**
-- **Location:** `tools.py:37-132` (CircuitBreaker, exponential backoff)
+- **Location:** `tools.py:47-100` (CircuitBreaker), `tools.py:101-140` (exponential backoff)
 - **Circuit Breaker Pattern:**
   - States: CLOSED (normal) -> OPEN (failing) -> HALF_OPEN (testing recovery)
   - Failure threshold: 5 consecutive failures
@@ -81,7 +81,7 @@ This project is designed to EXCEL in all five judging dimensions:
   - Per-institution error isolation (continues on single failure)
 - **Graceful Fallback:**
   - Grok Live Search when X API is rate limited
-  - Uses `grok-3-latest` with `search_parameters: {"mode": "auto"}`
+  - Uses `grok-4-1-fast` with `search_parameters: {"mode": "auto"}`
 - **Health Monitoring:**
   - `/health` endpoint with circuit breaker status
   - `/status` endpoint with full API metrics
@@ -91,8 +91,8 @@ This project is designed to EXCEL in all five judging dimensions:
 **Goal:** Creatively transform raw X objects into signals, predictions, alerts, or actions the official client can't provide.
 
 **Implementation:**
-- **Location:** `tools.py:274-326` (tweet enrichment), `tools.py:587-742` (GrokClient analysis)
-- **Viral Risk Scoring (0-100):**
+- **Location:** `tools.py:1094-1396` (GrokClient), `tools.py:1732-1841` (Grok Live Search)
+- **Viral Risk Scoring (0-100):** Formula: `min(100, (total_engagement / tweet_count) * (1 + verified_count / 10))`
   - Engagement score = (RTs * 3) + (quotes * 2) + (replies * 1.5) + likes
   - Verification weight: business/gov = 2.0x, verified = 1.5x, regular = 1.0x
   - Influence score based on follower count (capped at 10)
@@ -118,7 +118,7 @@ This project is designed to EXCEL in all five judging dimensions:
 **Goal:** Tightly and traceably apply Grok to retrieved X content to produce concise, high-signal outputs.
 
 **Implementation:**
-- **Location:** `tools.py:587-776` (GrokClient), `agent.py:27-93` & `api_server.py:66-149` (prompts)
+- **Location:** `tools.py:1094-1396` (GrokClient), `tools.py:1397-1731` (GrokAnalysisClient), `agent.py:27-93` & `api_server.py:75-158` (prompts)
 - **Tight Grounding:**
   - Exact tweet text passed to Grok (not summaries)
   - Tweet URLs included for every claim
@@ -152,28 +152,42 @@ This project is designed to EXCEL in all five judging dimensions:
 
 ### Backend: Python Agent (Google ADK + Grok)
 ```
-tools.py            → Multi-endpoint X API client, Grok analyzer, Slack alerter
-                      - XAPIClient: /tweets/search/recent, /tweets/counts/recent, /users/by
-                      - CircuitBreaker: resilience pattern
-                      - GrokClient: enhanced analysis with viral scoring
-api_server.py       → FastAPI server with SSE streaming endpoints
-                      - /stream/analyze/{institution}
-                      - /stream/batch
-                      - /health, /status, /trends
-agent.py            → ADK Agent definition with Grok 4.1 Fast via LiteLLM
-main.py             → Standalone monitoring loop (continuous mode)
+tools.py            → Multi-endpoint X API client, Grok analyzer, Slack alerter (2,774 lines)
+                      - XAPIClient: Official xdk SDK wrapper (lines 142-742)
+                      - CircuitBreaker: Resilience pattern (lines 47-100)
+                      - GrokClient: OpenAI-compatible analyzer (lines 1094-1396)
+                      - GrokAnalysisClient: xai_sdk wrapper for stateful analysis (lines 1397-1731)
+                      - StreamMonitor: Filtered stream with spike detection (lines 2256-2743)
+                      - InstitutionRegistry: 80+ classified institutions (lines 755-875)
+api_server.py       → FastAPI server with 21 endpoints (1,026 lines)
+                      - SSE streaming: /stream/analyze, /stream/batch
+                      - Monitoring: /monitor/start, /monitor/stream, /monitor/rules
+                      - Session: /analyze/continue, /analyze/mode
+                      - Health: /health, /status, /trends, /institutions
+agent.py            → ADK Agent definition with Grok 4.1 Fast via LiteLLM (234 lines)
+main.py             → Standalone monitoring loop (continuous mode) (410 lines)
+
+financial_sentinel/ → Experimental modular agent structure
+                      - agent_factory.py: Alternate agent configuration
+                      - agent.py: Minimal wrapper
 ```
 
 ### Frontend: Next.js + CopilotKit
 ```
 frontend/
   src/app/
-    page.tsx                      → Main chat UI with SSE streaming support
-                                    - Real-time status display
-                                    - Enhanced risk cards with viral scores
-                                    - Evidence tweets with URLs
-    api/copilotkit/route.ts       → CopilotRuntime → HttpAgent → AG-UI
+    page.tsx                      → Main chat UI (1,562 lines)
+                                    - SSE streaming integration (lines 427-492)
+                                    - Live filtered stream monitoring (lines 494-684)
+                                    - Continuous monitoring with intervals (lines 393-424)
+                                    - Risk card component (lines 118-270)
+                                    - Institution selection sidebar (lines 785-1150)
+                                    - Live events panel (lines 1208-1429)
+    layout.tsx                    → CopilotKit wrapper, metadata (39 lines)
+    api/copilotkit/route.ts       → CopilotRuntime → HttpAgent → AG-UI (26 lines)
   globals.css                     → Risk card styling (HIGH/MEDIUM/LOW)
+
+mobile-app/                       → React Native/Expo mobile implementation (WIP)
 ```
 
 ### Data Flow with SSE
@@ -247,7 +261,7 @@ SLACK_CHANNEL_ID=C0123456789
 
 See `.env.example` for detailed setup instructions.
 
-## API Endpoints
+## API Endpoints (21 total)
 
 ### AG-UI Protocol (CopilotKit)
 - `POST /` - AG-UI endpoint for agent communication
@@ -260,19 +274,37 @@ See `.env.example` for detailed setup instructions.
 - `POST /analyze` - Single institution analysis (non-streaming)
 - `POST /analyze/batch` - Multiple institutions (non-streaming)
 
-### Monitoring
+### Stream Monitoring (Filtered Stream)
+- `POST /monitor/start` - Start filtered stream monitoring
+- `GET /monitor/stream` - SSE stream of live tweets
+- `POST /monitor/stop` - Stop monitoring
+- `GET /monitor/status` - Current monitor status
+- `POST /monitor/add` - Add institution to monitor
+- `POST /monitor/analyze-buffer` - Analyze buffered tweets
+- `POST /monitor/sync` - Sync stream rules with X API
+- `DELETE /monitor/rules` - Clear all stream rules
+- `GET /monitor/rules` - List active rules
+- `GET /monitor/stats` - Monitoring statistics
+
+### Session Continuation (Responses API)
+- `POST /analyze/continue` - Continue analysis with follow-up
+- `GET /analyze/trend/{institution}` - Get trend analysis
+- `GET /analyze/mode/{institution}` - Get analysis mode settings
+
+### Health & Status
 - `GET /health` - Health check with feature flags and X API status
 - `GET /status` - Detailed API status with circuit breaker state
 - `GET /trends/{institution}` - Tweet volume trends (uses /tweets/counts)
+- `GET /institution/{name}/context` - Get institution context data
 
 ### Directory
-- `GET /institutions` - List of supported institutions with categories
+- `GET /institutions` - List of 28 supported institutions with categories
 
 ## Key Implementation Details
 
 ### Multi-Endpoint X API Integration (`tools.py`)
 ```python
-class XAPIClient:
+class XAPIClient:  # Uses official xdk library (lines 142-742)
     # Endpoint 1: Tweet Search
     def search_recent_tweets(query, max_results, hours_back, sort_order)
 
@@ -281,6 +313,9 @@ class XAPIClient:
 
     # Endpoint 3: User Lookup
     def lookup_users(usernames)
+
+    # Endpoint 4: Filtered Stream (Real-time)
+    def stream_posts()  # via StreamMonitor class
 
     # Combined Analysis
     def get_institution_mentions(institution_name, max_results, include_trend_data)
@@ -306,14 +341,18 @@ event: error    → {"message": "Rate limited"}
 
 ## Supported Financial Institutions
 
-The system monitors 7 categories:
-1. **Traditional Banks**: Chase, Bank of America, Wells Fargo, Citibank, Capital One
-2. **Crypto Exchanges**: Coinbase, Binance, Kraken, Gemini, Crypto.com
-3. **Crypto Wallets**: MetaMask, Phantom, Ledger, Trust Wallet
-4. **Stock Trading**: Robinhood, Webull, E*TRADE, Fidelity, Charles Schwab, TD Ameritrade
-5. **Robo-Advisors**: Wealthfront, Betterment, Acorns
-6. **Payment Apps**: Venmo, Cash App, PayPal, Zelle
-7. **Neobanks**: Chime, SoFi, Revolut, Current
+The system monitors 80+ institutions across 7 categories (defined in `tools.py:755-875`):
+
+| Category | Count | Examples |
+|----------|-------|----------|
+| Traditional Banks | 20 | Chase, Wells Fargo, JP Morgan, SVB, HSBC, Citi |
+| Neobanks | 14 | Chime, SoFi, Revolut, N26, Monzo, Current |
+| Crypto Exchanges | 16 | Coinbase, Binance, Kraken, Gemini, FTX, KuCoin |
+| Crypto Wallets | 17 | MetaMask, Phantom, Ledger, Trezor, Trust Wallet |
+| Trading Platforms | 19 | Robinhood, Fidelity, E*TRADE, Schwab, TD Ameritrade |
+| Payment Apps | 15 | Venmo, PayPal, Cash App, Zelle, Wise |
+
+**Note:** Frontend `/institutions` endpoint returns a curated subset of 28 institutions.
 
 Full list available via API: `GET http://localhost:8000/institutions`
 
@@ -323,7 +362,9 @@ Full list available via API: `GET http://localhost:8000/institutions`
 2. **Start frontend**: `cd frontend && npm run dev` (runs on port 3000)
 3. **Test in browser**: Navigate to `http://localhost:3000`
 4. **Test SSE**: Click "Stream Analysis" in sidebar
-5. **Example queries**:
+5. **Test Live Stream**: Click "Live Stream" button to start filtered stream monitoring
+6. **Test Continuous Monitoring**: Set interval and click "Start Monitoring"
+7. **Example queries**:
    - "Analyze Coinbase and Robinhood for risks"
    - "Check if there are any issues with Chase right now"
    - "Monitor my portfolio: Fidelity, MetaMask, Venmo"
@@ -331,9 +372,12 @@ Full list available via API: `GET http://localhost:8000/institutions`
 ## Important Notes
 
 - Backend must be running on `localhost:8000` before starting frontend
-- The system uses **real X API data**, not mock data
+- The system uses **real X API data** via official `xdk` SDK, not mock data
 - Rate limits apply: circuit breaker protects against cascading failures
 - Slack alerts require valid `SLACK_BOT_TOKEN` with `chat:write` scope
 - Frontend expects specific JSON format from tools (see `tools.py` for schema)
 - All API keys must be set in `.env` at project root (not in `frontend/.env.local`)
 - SSE endpoints require proper CORS configuration for cross-origin requests
+- **Filtered Stream** requires X API Pro tier for real-time tweet streaming
+- **Dual SDK Architecture**: Uses both `xai_sdk` (stateful analysis) and `xdk` (X API)
+- **Session Continuation**: Supports follow-up analysis via Responses API
