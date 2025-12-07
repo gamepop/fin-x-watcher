@@ -868,11 +868,15 @@ async def stream_monitor_events():
                 ):
                     if stop_event.is_set():
                         break
-                    # Put event in queue (thread-safe)
-                    asyncio.run_coroutine_threadsafe(
-                        event_queue.put(post),
-                        loop
-                    )
+                    try:
+                        # Put event in queue (thread-safe)
+                        asyncio.run_coroutine_threadsafe(
+                            event_queue.put(post),
+                            loop
+                        )
+                    except UnicodeDecodeError:
+                        # Skip malformed UTF-8 chunks without killing the worker
+                        continue
             except Exception as e:
                 asyncio.run_coroutine_threadsafe(
                     event_queue.put({"type": "error", "error": str(e)}),
