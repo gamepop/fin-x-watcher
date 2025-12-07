@@ -982,7 +982,7 @@ export default function Home() {
     <div className="flex h-screen bg-gradient-to-br from-slate-900 to-slate-800">
       {/* Sidebar - Institution Selection */}
       <aside className={`${showSetup ? 'w-80' : 'w-0'} transition-all duration-300 overflow-hidden bg-slate-800/50 border-r border-slate-700`}>
-        <div className="p-4 h-full overflow-y-auto">
+        <div className="p-4 h-full overflow-y-auto flex flex-col">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-semibold text-white">My Portfolio</h2>
             <span className="text-xs text-slate-400">{selectedInstitutions.length} selected</span>
@@ -1300,6 +1300,25 @@ export default function Home() {
               )}
             </div>
           )}
+
+          {/* Clear Button - Bottom Left Corner */}
+          <div className="mt-auto pt-4 border-t border-slate-700">
+            <button
+              onClick={() => {
+                setSelectedInstitutions([]);
+                setLiveResults({});
+                setStreamingResults([]);
+                setLiveStreamEvents([]);
+                toast.info("Cleared all selections and results");
+              }}
+              className="w-full bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white text-sm py-2 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+              Clear All
+            </button>
+          </div>
         </div>
       </aside>
 
