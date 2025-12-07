@@ -2625,6 +2625,9 @@ class StreamMonitor:
                 if len(self.event_buffer) > 500:
                     self.event_buffer = self.event_buffer[-250:]
 
+                # Update stats
+                self._tweets_processed += 1
+
                 yield event
 
                 # Trigger instant Grok analysis for high-urgency or high-engagement

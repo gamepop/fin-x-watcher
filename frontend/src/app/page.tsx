@@ -848,7 +848,7 @@ export default function Home() {
         const response = await fetch("http://localhost:8000/monitor/stats");
         if (response.ok) {
           const data = await response.json();
-          setLiveStreamStats(data);
+          setLiveStreamStats(data?.stats || data);
         }
       } catch (error) {
         console.error("Failed to fetch stream stats:", error);
