@@ -773,6 +773,20 @@ export default function Home() {
         }));
       });
 
+      es.addEventListener("info", (event: any) => {
+        try {
+          const data = JSON.parse(event.data);
+          setLiveStreamEvents(prev => [{
+            id: `info-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+            type: 'connected', // reuse connected type for info messages
+            timestamp: new Date(),
+            summary: data.message || "Stream info"
+          } as LiveStreamEvent, ...prev].slice(0, 200));
+        } catch (e) {
+          console.error("Failed to parse info event", e);
+        }
+      });
+
       es.addEventListener("error", (event: any) => {
         const data = event?.data ? JSON.parse(event.data) : { error: "Stream error" };
         setLiveStreamError(data.error || "Stream error");

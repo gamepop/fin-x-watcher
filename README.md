@@ -2,23 +2,113 @@
 
 **Real-time financial institution risk monitoring powered by X API and Grok AI**
 
-Built for the **Grok x X API Hackathon** - December 2025
-
 ---
 
 ## Overview
 
-Financial Sentinel monitors banks, crypto exchanges, trading platforms, and payment apps in real-time by analyzing social media signals from X (Twitter). It uses the official X Python SDK (xdk) for data collection and Grok AI for intelligent risk analysis.
+Financial Sentinel monitors banks, crypto exchanges, trading platforms, and payment apps in real-time by analyzing social media signals from X (Twitter). It uses the official X Python SDK (xdk) for comprehensive data collection and Grok AI for intelligent risk analysis.
 
 ### Key Features
 
-- **Multi-Institution Monitoring**: Banks, crypto exchanges, wallets, trading platforms, payment apps, neobanks
-- **Real-time Analysis**: SSE streaming for live updates as analysis progresses
-- **Institution-Type-Specific Prompts**: Tailored risk analysis for each institution category
-- **Viral Risk Scoring**: Engagement-weighted signals with verification credibility
-- **Full Traceability**: Every finding includes direct tweet URLs
-- **Circuit Breaker Pattern**: Resilient API handling with automatic fallback to Grok Live Search
+- **Multi-Endpoint X API Integration**: Deep integration with search, counts, streaming, and user lookup endpoints
+- **Real-time Filtered Stream**: Live monitoring with automatic fallback to polling when stream is unavailable
+- **SSE Streaming**: Progressive updates as analysis happens - see every stage in real-time
+- **Institution-Type-Specific Analysis**: Tailored risk prompts for banks, crypto, trading, payments
+- **Viral Risk Scoring**: Engagement-weighted signals with verification credibility scoring
+- **Full Traceability**: Every finding includes direct tweet URLs and evidence
+- **Circuit Breaker Pattern**: Resilient API handling with automatic recovery
+- **Trend Detection**: Volume spike detection with velocity tracking
 - **Slack Alerting**: Automated alerts for HIGH/MEDIUM risk detections
+
+---
+
+## Why Financial Sentinel?
+
+### Deep X API Integration
+
+Financial Sentinel goes beyond basic tweet fetching with sophisticated multi-endpoint usage:
+
+| Endpoint | Usage | Purpose |
+|----------|-------|---------|
+| `/tweets/search/recent` | Primary data source | Rich tweet data with engagement metrics, author info, entities |
+| `/tweets/counts/recent` | Volume analysis | Trend detection, spike identification with granular time windows |
+| `/tweets/search/stream` | Real-time monitoring | Live filtered stream with automatic fallback |
+| `/users/by` | Author verification | Credibility scoring, influence weighting |
+
+**Advanced Query Features:**
+- Comprehensive `tweet.fields`: `created_at`, `public_metrics`, `context_annotations`, `entities`, `referenced_tweets`
+- Full `expansions`: `author_id`, `referenced_tweets.id`
+- Rich `user.fields`: `username`, `verified`, `verified_type`, `public_metrics`, `description`
+- Smart operators: `-is:retweet`, `lang:en`, relevancy vs recency sorting
+
+### Real-time Responsiveness
+
+The system instantly reacts to events on X with progressive SSE streaming:
+
+```
+1. "Starting analysis of Coinbase..."
+2. "Fetching tweets from X API (api.x.com)..."
+3. "Searching /tweets/search/recent endpoint..."
+4. "Fetched 87 tweets"
+5. "Volume trend: +45.2%"
+6. "Running Grok sentiment analysis (api.x.ai)..."
+7. "Analysis complete: MEDIUM risk"
+```
+
+**Live Stream Monitoring:**
+- Attempts X filtered stream first (30-second timeout)
+- Automatic fallback to search API polling (every 15 seconds)
+- Transparent status updates in UI showing stream method in use
+
+### Robust API Handling
+
+Built to handle real-world API constraints gracefully:
+
+- **Circuit Breaker**: Prevents cascade failures (5 failures → OPEN → 60s recovery → HALF_OPEN)
+- **Exponential Backoff**: Retry with jitter on transient errors (1s base, 60s max, 10% jitter)
+- **Request Timeout**: 30-second timeout on all API calls
+- **Graceful Fallback**: Grok Live Search when X API is rate limited
+- **Per-Institution Isolation**: Single institution failure doesn't affect others
+
+### Intelligent Signal Processing
+
+Transforms raw X data into actionable financial intelligence:
+
+**Viral Risk Scoring (0-100):**
+```
+engagement_score = (retweets × 3) + (quotes × 2) + (replies × 1.5) + likes
+verification_weight = business/gov: 2.0x, verified: 1.5x, regular: 1.0x
+influence_score = log10(followers) capped at 10
+credibility = engagement × verification × influence
+```
+
+**Trend Detection:**
+- Volume velocity: `(recent_count - older_count) / older_count × 100`
+- Spike detection: >50% increase triggers `is_spiking` flag
+- Time-series data for charting
+
+### Grounded AI Analysis
+
+Grok analysis is tightly grounded in retrieved X content:
+
+- Exact tweet text passed to Grok (not summaries)
+- Tweet URLs included for every claim
+- Aggregate metrics provided: engagement score, verified count, credibility
+- Structured output with evidence:
+
+```json
+{
+  "risk_level": "HIGH|MEDIUM|LOW",
+  "summary": "2-3 sentence assessment citing specific evidence",
+  "key_findings": ["Finding with tweet evidence"],
+  "top_concerning_tweets": [
+    {"text": "...", "url": "https://x.com/...", "engagement": "X RTs", "why_concerning": "..."}
+  ],
+  "viral_indicators": "...",
+  "confidence": 0.85,
+  "recommended_action": "..."
+}
+```
 
 ---
 
@@ -65,6 +155,7 @@ User Query ──▶ CopilotKit ──▶ AG-UI Protocol ──▶ ADK Agent
                                               │ - Search      │
                                               │ - Counts      │
                                               │ - Streaming   │
+                                              │ - Users       │
                                               └───────┬───────┘
                                                       │
                                     Rate Limited? ────┼──── Success
@@ -87,6 +178,25 @@ User Query ──▶ CopilotKit ──▶ AG-UI Protocol ──▶ ADK Agent
                                               └───────────────┘
 ```
 
+### Live Stream Flow
+
+```
+Start Monitoring ──▶ Try Filtered Stream (30s timeout)
+                            │
+              ┌─────────────┴─────────────┐
+              │                           │
+         Success                     Timeout/Error
+              │                           │
+              ▼                           ▼
+    Continue with               Fallback to Polling
+    Filtered Stream             (search_recent every 15s)
+              │                           │
+              └───────────────────────────┘
+                            │
+                            ▼
+                   Process Tweets ──▶ Frontend SSE
+```
+
 ---
 
 ## Tech Stack
@@ -98,7 +208,7 @@ User Query ──▶ CopilotKit ──▶ AG-UI Protocol ──▶ ADK Agent
 | API Framework | **FastAPI** | REST & SSE streaming endpoints |
 | Agent Framework | **Google ADK** | AI agent orchestration |
 | Protocol | **AG-UI** | CopilotKit ↔ ADK communication |
-| X API | **xdk** (Official SDK) | Tweet search, counts, streaming |
+| X API | **xdk** (Official SDK) | Tweet search, counts, streaming, users |
 | AI Analysis | **Grok 4.1 Fast** | Sentiment & risk analysis |
 | Model Routing | **LiteLLM** | Unified LLM interface |
 
@@ -127,7 +237,7 @@ User Query ──▶ CopilotKit ──▶ AG-UI Protocol ──▶ ADK Agent
 
 ```
 fin-x-watcher/
-├── api_server.py          # FastAPI server with AG-UI endpoint
+├── api_server.py          # FastAPI server with AG-UI & SSE endpoints
 ├── tools.py               # X API client, Grok client, analysis tools
 ├── agent.py               # Standalone ADK agent (alternative entry)
 ├── main.py                # CLI interface
@@ -138,7 +248,7 @@ fin-x-watcher/
 └── frontend/
     ├── src/
     │   └── app/
-    │       ├── page.tsx           # Main chat interface
+    │       ├── page.tsx           # Main chat interface with live stream
     │       └── api/
     │           └── copilotkit/
     │               └── route.ts   # AG-UI proxy route
@@ -170,24 +280,34 @@ Financial Sentinel classifies institutions into 6 categories, each with tailored
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/` | AG-UI protocol endpoint for CopilotKit |
-| `GET` | `/health` | Health check with X API status |
-| `GET` | `/status` | Detailed service status |
+| `GET` | `/health` | Health check with X API status & circuit breaker state |
+| `GET` | `/status` | Detailed service status with metrics |
 
 ### Analysis Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/stream/analyze/{institution}` | SSE streaming analysis |
-| `POST` | `/stream/batch` | Batch SSE analysis |
+| `GET` | `/stream/analyze/{institution}` | SSE streaming analysis with progressive updates |
+| `POST` | `/stream/batch` | Batch SSE analysis for multiple institutions |
 | `POST` | `/analyze` | Single institution (non-streaming) |
 | `POST` | `/analyze/batch` | Multiple institutions (non-streaming) |
+
+### Live Monitoring Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/monitor/start` | Start monitoring with filtered stream rules |
+| `GET` | `/monitor/stream` | SSE stream of live tweets |
+| `POST` | `/monitor/stop` | Stop monitoring and clean up rules |
+| `GET` | `/monitor/stats` | Current monitoring statistics |
+| `POST` | `/monitor/sync` | Sync monitoring with portfolio |
 
 ### Data Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/trends/{institution}` | Tweet volume trends |
-| `GET` | `/institutions` | Available institutions list |
+| `GET` | `/trends/{institution}` | Tweet volume trends with spike detection |
+| `GET` | `/institutions` | Available institutions list with categories |
 
 ---
 
@@ -197,7 +317,7 @@ Financial Sentinel classifies institutions into 6 categories, each with tailored
 
 - Python 3.13+
 - Node.js 20+
-- X Developer Account (API v2 access)
+- X Developer Account (API v2 access with filtered stream)
 - Grok API Key (x.ai)
 - Slack Bot Token (optional, for alerts)
 
@@ -245,7 +365,7 @@ NEXT_PUBLIC_COPILOTKIT_REMOTE_ENDPOINT=http://localhost:8000
 
 **Terminal 1 - Backend:**
 ```bash
-python -m uvicorn api_server:app --host 0.0.0.0 --port 8000
+python api_server.py
 ```
 
 **Terminal 2 - Frontend:**
@@ -287,6 +407,18 @@ Sentinel: 📊 **Coinbase** | Risk: MEDIUM
 ✅ **Action**: Alert sent to Slack
 ```
 
+### Live Stream Monitoring
+
+The UI shows real-time status updates:
+
+```
+[12:34:01] Trying filtered stream (timeout: 30s)...
+[12:34:31] No data from filtered stream after 30s, falling back to polling
+[12:34:31] Using search API polling for live updates (every 15s)
+[12:34:46] Found 5 new tweets
+[12:35:01] Found 3 new tweets
+```
+
 ### SSE Streaming (JavaScript)
 
 ```javascript
@@ -296,10 +428,14 @@ eventSource.addEventListener('status', (e) => {
   console.log('Status:', JSON.parse(e.data).message);
 });
 
+eventSource.addEventListener('progress', (e) => {
+  console.log('Progress:', JSON.parse(e.data));
+});
+
 eventSource.addEventListener('result', (e) => {
   const result = JSON.parse(e.data);
   console.log('Risk Level:', result.risk_level);
-  console.log('Analysis:', result.analysis);
+  console.log('Viral Score:', result.viral_score);
 });
 
 eventSource.addEventListener('done', () => {
@@ -315,7 +451,8 @@ import json
 
 result = json.loads(fetch_market_sentiment("Chase"))
 print(f"Risk: {result['analysis']['risk_level']}")
-print(f"Type: {result['institution_type']}")
+print(f"Viral Score: {result['analysis']['viral_score']}")
+print(f"Trend: {result['trend_velocity']}%")
 ```
 
 ---
@@ -326,15 +463,33 @@ Financial Sentinel uses the **official X Python SDK (xdk)** with multiple endpoi
 
 ### Endpoints Used
 
-| Endpoint | Purpose |
-|----------|---------|
-| `client.posts.search_recent()` | Search tweets with risk keywords |
-| `client.stream.posts()` | Real-time filtered stream (planned) |
-| `client.stream.update_rules()` | Stream rule management (planned) |
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/tweets/search/recent` | `client.posts.search_recent()` | Search tweets with risk keywords |
+| `/tweets/counts/recent` | `client.posts.counts()` | Volume trend analysis |
+| `/tweets/search/stream` | `client.stream.posts()` | Real-time filtered stream |
+| `/tweets/search/stream/rules` | `client.stream.update_rules()` | Stream rule management |
+| `/users/by` | `client.users.by_usernames()` | Author verification |
+
+### Query Construction
+
+```python
+# Risk-focused query
+query = f'"{institution}" ({" OR ".join(risk_keywords)}) lang:en -is:retweet'
+
+# Comprehensive fields
+tweet_fields = [
+    "created_at", "public_metrics", "author_id", "text",
+    "context_annotations", "conversation_id", "entities", "referenced_tweets"
+]
+expansions = ["author_id", "referenced_tweets.id"]
+user_fields = ["username", "verified", "verified_type", "public_metrics", "description"]
+```
 
 ### Features
 
 - **Automatic Pagination**: xdk handles pagination transparently
+- **Stream with Fallback**: Filtered stream → polling fallback with 30s timeout
 - **Circuit Breaker**: Prevents cascade failures (5 failures → 60s cooldown)
 - **Exponential Backoff**: Retry with jitter on transient errors
 - **Grok Fallback**: When rate limited, falls back to Grok Live Search
@@ -349,6 +504,24 @@ Financial Sentinel uses the **official X Python SDK (xdk)** with multiple endpoi
 CLOSED ──(5 failures)──▶ OPEN ──(60s timeout)──▶ HALF_OPEN
    ▲                                                  │
    └──────────────(3 successes)───────────────────────┘
+```
+
+**States:**
+- **CLOSED**: Normal operation, requests pass through
+- **OPEN**: Failing, all requests rejected immediately
+- **HALF_OPEN**: Testing recovery, limited requests allowed
+
+### Stream Fallback
+
+```
+Filtered Stream ──(timeout/error)──▶ Search API Polling
+       │                                      │
+       │ 30s timeout                          │ 15s interval
+       │ TooManyConnections                   │
+       │ Auth errors                          │
+       ▼                                      ▼
+  Real-time tweets                    Recent tweets
+  (when available)                    (always available)
 ```
 
 ### Fallback Chain
@@ -382,6 +555,15 @@ X API Search ──(rate limited)──▶ Grok Live Search ──(error)──�
 | High Follower (>100K) | +influence score |
 | High Engagement | +engagement score |
 
+### Viral Score Components
+
+```
+engagement_score = (RTs × 3) + (quotes × 2) + (replies × 1.5) + likes
+verification_weight = {business: 2.0, verified: 1.5, regular: 1.0}
+influence_score = min(log10(followers), 10)
+viral_score = weighted_average(engagement, verification, influence) × 100
+```
+
 ---
 
 ## Development
@@ -394,6 +576,9 @@ python -c "from tools import classify_institution; print(classify_institution('C
 
 # Test sentiment analysis
 python -c "from tools import fetch_market_sentiment; print(fetch_market_sentiment('Chase'))"
+
+# Test X API connection
+python -c "from tools import XAPIClient; c = XAPIClient(); print(c.client)"
 ```
 
 ### Code Style
@@ -410,7 +595,7 @@ cd frontend && npm run lint
 
 ## License
 
-MIT License - Built for the Grok x X API Hackathon 2025
+MIT License
 
 ---
 

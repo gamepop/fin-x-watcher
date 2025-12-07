@@ -916,37 +916,197 @@ async def stream_monitor_events():
         stop_event = asyncio.Event()
 
         def stream_worker():
-            """Worker that runs blocking stream and puts events in queue."""
-            try:
-                for post in _stream_monitor.x_client.stream_posts(
-                    backfill_minutes=0,
-                    include_user_data=True
-                ):
-                    if stop_event.is_set():
-                        break
-                    try:
-                        # Put event in queue (thread-safe)
+            """Worker that tries filtered stream first, then falls back to polling."""
+            import time as time_module
+
+            stream_timeout = 30  # seconds to wait for filtered stream before fallback
+            polling_interval = 15  # seconds between polls
+
+            def poll_for_tweets():
+                """Poll using search API."""
+                institutions = list(_stream_monitor.monitored_institutions.keys())
+                if not institutions:
+                    return []
+
+                try:
+                    # Build query for all institutions
+                    query_parts = [f'"{inst}"' for inst in institutions[:5]]  # Limit to 5 to avoid query length issues
+                    query = f"({' OR '.join(query_parts)}) lang:en -is:retweet"
+
+                    tweets = _stream_monitor.x_client.search_recent_tweets(
+                        query=query,
+                        max_results=20,
+                        hours_back=1,
+                        sort_order="recency"
+                    )
+                    return tweets
+                except Exception as e:
+                    if "rate limit" not in str(e).lower():
                         asyncio.run_coroutine_threadsafe(
-                            event_queue.put(post),
+                            event_queue.put({"type": "info", "message": f"Poll error: {str(e)[:100]}"}),
                             loop
                         )
-                    except UnicodeDecodeError:
-                        # Skip malformed UTF-8 chunks without killing the worker
-                        continue
-            except UnicodeDecodeError:
-                # Handle UTF-8 errors at the stream level - restart stream
+                    return []
+
+            def try_filtered_stream():
+                """Try to use filtered stream with timeout. Returns True if successful, False to fallback."""
+                import threading
+                import queue as thread_queue
+
                 asyncio.run_coroutine_threadsafe(
-                    event_queue.put({"type": "error", "error": "UTF-8 decode error, restarting stream"}),
+                    event_queue.put({"type": "info", "message": f"Trying filtered stream (timeout: {stream_timeout}s)..."}),
                     loop
                 )
-            except Exception as e:
-                # Only log non-UTF-8 errors
-                error_str = str(e).lower()
-                if "utf-8" not in error_str and "codec" not in error_str:
+
+                # Use a thread-safe queue and timeout to handle blocking stream
+                stream_data_queue = thread_queue.Queue()
+                stream_stop = threading.Event()
+                got_data = threading.Event()
+
+                def stream_reader():
+                    """Read from stream in separate thread."""
+                    try:
+                        for post_response in _stream_monitor.x_client.client.stream.posts():
+                            if stream_stop.is_set():
+                                break
+                            got_data.set()  # Signal that we got data
+                            stream_data_queue.put(("data", post_response))
+                        stream_data_queue.put(("done", None))
+                    except Exception as e:
+                        stream_data_queue.put(("error", e))
+
+                # Start stream reader thread
+                reader_thread = threading.Thread(target=stream_reader, daemon=True)
+                reader_thread.start()
+
+                try:
+                    tweet_count = 0
+                    deadline = time_module.time() + stream_timeout
+
+                    while time_module.time() < deadline or tweet_count > 0:
+                        if stop_event.is_set():
+                            stream_stop.set()
+                            return True  # stopped by user
+
+                        try:
+                            # Wait for data with short timeout to allow checking deadline
+                            msg_type, payload = stream_data_queue.get(timeout=1.0)
+
+                            if msg_type == "error":
+                                raise payload
+                            elif msg_type == "done":
+                                return True  # stream ended normally
+                            elif msg_type == "data":
+                                # Process the tweet
+                                data = payload.model_dump() if hasattr(payload, 'model_dump') else dict(payload)
+
+                                # Validate data
+                                if isinstance(data, dict) and data.get("error"):
+                                    asyncio.run_coroutine_threadsafe(
+                                        event_queue.put({"type": "info", "message": f"Stream error: {str(data.get('error'))[:100]}"}),
+                                        loop
+                                    )
+                                    stream_stop.set()
+                                    return False  # fallback
+
+                                if not isinstance(data, dict) or not data.get("data"):
+                                    continue
+
+                                tweet_data = data.get("data", {})
+                                if isinstance(tweet_data, dict):
+                                    tweet_count += 1
+                                    # Extend deadline on successful data
+                                    deadline = time_module.time() + stream_timeout
+
+                                    # Format tweet for frontend
+                                    tweet = {
+                                        "id": tweet_data.get("id"),
+                                        "text": tweet_data.get("text", ""),
+                                        "author_id": tweet_data.get("author_id"),
+                                        "created_at": tweet_data.get("created_at"),
+                                        "source": "filtered_stream"
+                                    }
+                                    asyncio.run_coroutine_threadsafe(
+                                        event_queue.put(tweet),
+                                        loop
+                                    )
+
+                        except thread_queue.Empty:
+                            # No data yet, check if we should timeout
+                            if time_module.time() >= deadline and tweet_count == 0:
+                                asyncio.run_coroutine_threadsafe(
+                                    event_queue.put({"type": "info", "message": f"No data from filtered stream after {stream_timeout}s, falling back to polling"}),
+                                    loop
+                                )
+                                stream_stop.set()
+                                return False  # timeout, fallback to polling
+
+                    # If we got here with data, keep streaming
+                    return True
+
+                except Exception as e:
+                    error_str = str(e).lower()
+                    if "toomanyconnections" in error_str or "429" in error_str:
+                        asyncio.run_coroutine_threadsafe(
+                            event_queue.put({"type": "info", "message": "Filtered stream unavailable (TooManyConnections), falling back to polling"}),
+                            loop
+                        )
+                    elif "401" in error_str or "unauthorized" in error_str:
+                        asyncio.run_coroutine_threadsafe(
+                            event_queue.put({"type": "info", "message": "Filtered stream auth error, falling back to polling"}),
+                            loop
+                        )
+                    else:
+                        asyncio.run_coroutine_threadsafe(
+                            event_queue.put({"type": "info", "message": f"Stream error: {str(e)[:100]}, falling back to polling"}),
+                            loop
+                        )
+                    stream_stop.set()
+                    return False  # fallback to polling
+                finally:
+                    stream_stop.set()
+
+            # First, try filtered stream
+            stream_success = try_filtered_stream()
+
+            if stream_success or stop_event.is_set():
+                return  # stream worked or user stopped
+
+            # Fallback to polling
+            asyncio.run_coroutine_threadsafe(
+                event_queue.put({"type": "info", "message": "Using search API polling for live updates (every 15s)"}),
+                loop
+            )
+
+            seen_tweet_ids = set()
+            while not stop_event.is_set():
+                # Poll for tweets
+                tweets = poll_for_tweets()
+                new_count = 0
+                for tweet in tweets:
+                    if stop_event.is_set():
+                        break
+                    tweet_id = tweet.get("id")
+                    if tweet_id and tweet_id not in seen_tweet_ids:
+                        seen_tweet_ids.add(tweet_id)
+                        new_count += 1
+                        # Keep seen_ids bounded
+                        if len(seen_tweet_ids) > 1000:
+                            seen_tweet_ids = set(list(seen_tweet_ids)[-500:])
+                        tweet["source"] = "search_api"
+                        asyncio.run_coroutine_threadsafe(
+                            event_queue.put(tweet),
+                            loop
+                        )
+
+                if new_count > 0:
                     asyncio.run_coroutine_threadsafe(
-                        event_queue.put({"type": "error", "error": str(e)}),
+                        event_queue.put({"type": "info", "message": f"Found {new_count} new tweets"}),
                         loop
                     )
+
+                # Wait before next poll
+                time_module.sleep(polling_interval)
 
         # Start stream worker in background
         future = loop.run_in_executor(executor, stream_worker)
@@ -969,6 +1129,9 @@ async def stream_monitor_events():
 
                     if event.get("error"):
                         yield f"event: error\ndata: {json.dumps(event)}\n\n"
+                    elif event_type == "info":
+                        # Info message (e.g., fallback to polling, stream status)
+                        yield f"event: info\ndata: {json.dumps(event)}\n\n"
                     elif event_type == "alert":
                         # High-urgency or high-engagement alert with Grok analysis
                         yield f"event: alert\ndata: {json.dumps(event)}\n\n"
