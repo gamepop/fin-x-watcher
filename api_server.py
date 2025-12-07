@@ -888,14 +888,20 @@ async def stream_monitor_events():
                             post = next(stream_iter)
                         except StopIteration:
                             break
-                        except UnicodeDecodeError as e:
-                            # Increment error counter and restart stream
+                        except UnicodeDecodeError:
+                            # Skip malformed UTF-8 chunk and continue to next post
                             utf8_error_count += 1
-                            # Silently skip malformed UTF-8 chunks
-                            break
+                            if utf8_error_count > max_utf8_errors:
+                                # Too many consecutive errors, restart stream
+                                break
+                            continue
 
                         if stop_event.is_set():
                             break
+                        
+                        # Reset error count on successful read
+                        utf8_error_count = 0
+                        
                         try:
                             # Put event in queue (thread-safe)
                             asyncio.run_coroutine_threadsafe(
