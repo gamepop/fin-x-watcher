@@ -1802,7 +1802,7 @@ Provide your risk assessment applying {inst_type.replace('_', ' ')} context. Inc
 # Combined Sentiment Tool (ADK Tool Function - Enhanced)
 # =============================================================================
 
-def fetch_market_sentiment(bank_name: str, use_xai_sdk: bool = True) -> str:
+def fetch_market_sentiment(bank_name: str, use_xai_sdk: bool = False) -> str:
     """
     Fetch comprehensive real-time market sentiment for a financial institution.
 
