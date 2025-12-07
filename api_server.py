@@ -13,7 +13,7 @@ REAL-TIME RESPONSIVENESS FEATURES:
 import os
 import json
 import asyncio
-from typing import List, Optional, AsyncGenerator
+from typing import List, Optional, AsyncGenerator, Dict
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 
@@ -581,10 +581,40 @@ class MonitorRequest(BaseModel):
     institutions: List[str]
 
 
+# ================= Polling fallback constants =================
+POLL_BATCHES = [
+    # Traditional Banks
+    ["Chase", "Bank of America", "Wells Fargo", "Citibank", "Capital One", "US Bank", "PNC Bank"],
+    # Crypto Exchanges
+    ["Coinbase", "Binance", "Kraken", "Gemini", "Crypto.com", "KuCoin", "Bitfinex"],
+    # Crypto Wallets
+    ["MetaMask", "Phantom", "Ledger", "Trust Wallet", "Coinbase Wallet"],
+    # Stock Trading
+    ["Robinhood", "Webull", "E*TRADE", "Fidelity", "Charles Schwab", "TD Ameritrade", "Interactive Brokers"],
+    # Robo-Advisors
+    ["Wealthfront", "Betterment", "Acorns", "SoFi Invest", "Ellevest"],
+    # Payment Apps
+    ["Venmo", "Cash App", "PayPal", "Zelle", "Apple Pay"],
+    # Neobanks
+    ["Chime", "SoFi", "Revolut", "Current", "Varo"],
+]
+
+FALLBACK_QUERY = "(finance OR banking OR markets OR stocks OR crypto OR fintech)"
+
+# Max tweets to send to Grok relevance check per poll (to limit cost)
+GROK_MAX_CHECKS = 10
+
+
 class ContinueAnalysisRequest(BaseModel):
     """Request for continuing analysis session."""
     institution: str
     follow_up: str
+
+
+class PollRequest(BaseModel):
+    """Request for polling tweets via search_recent."""
+    institutions: List[str] = []
+    max_results: int = 20
 
 
 @app.post("/monitor/start")
@@ -620,6 +650,169 @@ async def start_monitor(request: MonitorRequest):
             "error": str(e),
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
+
+
+def _build_poll_queries(institutions: List[str]) -> List[str]:
+    """
+    Build per-institution queries with risk keywords to reduce noise.
+    Each query is of the form: "Name" (kw1 OR kw2 ...) lang:en -is:retweet
+    """
+    queries: List[str] = []
+    for name in institutions or []:
+        ctx = get_institution_context(name)
+        risk_keywords = ctx.get("risk_keywords", [])[:4]
+        keyword_clause = ""
+        if risk_keywords:
+            keyword_clause = f" ({' OR '.join(risk_keywords)})"
+        q = f"\"{name}\"{keyword_clause} lang:en -is:retweet"
+        queries.append(q)
+
+    # If none provided, fall back to batches for broad monitoring
+    if not queries:
+        for batch in POLL_BATCHES:
+            if batch:
+                queries.append(" OR ".join(f"\"{n}\"" for n in batch) + " lang:en -is:retweet")
+    return queries
+
+
+def _grok_relevance_filter(tweets: List[Dict], institutions: List[str]) -> List[Dict]:
+    """
+    Use Grok to keep only tweets that are financially relevant to the selected institutions.
+    Caps checks to GROK_MAX_CHECKS for cost control; if Grok fails, returns original list.
+    """
+    if not tweets:
+        return tweets
+
+    try:
+        grok = GrokClient()
+    except Exception:
+        return tweets  # if Grok not available, return original
+
+    kept: List[Dict] = []
+    checks = 0
+    inst_list = ", ".join(institutions) if institutions else "financial institutions"
+
+    for t in tweets:
+        if checks >= GROK_MAX_CHECKS:
+            kept.append(t)
+            continue
+        text = t.get("text") or ""
+        if not text.strip():
+            continue
+        prompt = (
+            "You are filtering tweets for financial/news relevance.\n"
+            f"Institutions of interest: {inst_list}\n"
+            "Tweet:\n"
+            f"{text}\n\n"
+            "Answer with a single JSON object: {\"relevant\": true|false} "
+            "where relevant means the tweet is about finance/markets/companies or the listed institutions."
+        )
+        try:
+            resp = grok.client.chat.completions.create(
+                model="grok-4-1-mini",
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0,
+                max_tokens=10,
+            )
+            content = resp.choices[0].message.content if resp and resp.choices else ""
+            is_relevant = False
+            if content:
+                try:
+                    obj = json.loads(content.strip())
+                    is_relevant = bool(obj.get("relevant"))
+                except Exception:
+                    is_relevant = "true" in content.lower()
+            if is_relevant:
+                kept.append(t)
+        except Exception:
+            # On Grok error, keep original tweet to avoid losing data
+            kept.append(t)
+        checks += 1
+
+    return kept
+
+
+@app.post("/monitor/poll")
+async def poll_recent_tweets(request: PollRequest):
+    """
+    Poll recent tweets using search_recent (fallback when filtered stream is unavailable).
+
+    - Batches institution queries to avoid 400 (too long) errors.
+    - Falls back to a broad finance/markets query if no institution hits.
+    """
+    x_client = XAPIClient()
+    queries = _build_poll_queries(request.institutions)
+    tweets: List[Dict] = []
+    seen_ids = set()
+    query_used = None
+
+    def normalize(tweet: Dict) -> Dict:
+        txt = tweet.get("text") or ""
+        author_user = tweet.get("author_username") or "unknown"
+        inst_match = None
+        for name in request.institutions:
+            if name.lower() in txt.lower():
+                inst_match = name
+                break
+        return {
+            "id": tweet.get("id"),
+            "text": txt,
+            "author": f"@{author_user}",
+            "author_name": author_user,
+            "author_verified": tweet.get("author_verified", False),
+            "author_followers": tweet.get("author_followers", 0),
+            "url": tweet.get("url"),
+            "timestamp": tweet.get("created_at"),
+            "institution": inst_match,
+            "engagement": {
+                "retweets": tweet.get("retweets", 0),
+                "likes": tweet.get("likes", 0),
+                "replies": tweet.get("replies", 0),
+            },
+        }
+
+    try:
+        # Try institution batches first
+        for q in queries:
+            try:
+                query_used = q
+                results = x_client.search_recent_tweets(q, max_results=request.max_results)
+                for t in results:
+                    tid = t.get("id")
+                    if tid and tid not in seen_ids:
+                        seen_ids.add(tid)
+                        tweets.append(normalize(t))
+            except Exception:
+                continue
+
+        # If still nothing, fallback to broad finance query
+        if not tweets:
+            try:
+                query_used = FALLBACK_QUERY
+                results = x_client.search_recent_tweets(FALLBACK_QUERY, max_results=request.max_results)
+                for t in results:
+                    tid = t.get("id")
+                    if tid and tid not in seen_ids:
+                        seen_ids.add(tid)
+                        tweets.append(normalize(t))
+            except Exception as exc:
+                return {"status": "error", "error": str(exc)}
+
+        # Grok relevance filter to reduce unrelated tweets
+        tweets = _grok_relevance_filter(tweets, request.institutions)
+
+        tweets.sort(key=lambda t: t.get("timestamp") or "", reverse=True)
+
+        return {
+            "status": "ok",
+            "count": len(tweets),
+            "query_used": query_used,
+            "tweets": tweets
+        }
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
 
 
 @app.get("/monitor/stream")

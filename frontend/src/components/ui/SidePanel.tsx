@@ -8,6 +8,7 @@ interface SidePanelProps {
   onClose: () => void;
   children: React.ReactNode;
   title?: string;
+  showLivePanel?: boolean;
 }
 
 export default function SidePanel({
@@ -15,6 +16,7 @@ export default function SidePanel({
   onClose,
   children,
   title = "Chat Assistant",
+  showLivePanel = false,
 }: SidePanelProps) {
   return (
     <>
@@ -40,6 +42,7 @@ export default function SidePanel({
             exit={{ x: "100%" }}
             transition={{ type: "spring", damping: 25, stiffness: 200 }}
             className="fixed right-0 top-0 h-full w-full lg:w-[500px] bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 border-l border-slate-700/50 shadow-2xl z-50 flex flex-col"
+            style={{ right: '380px', transition: 'right 0.3s ease' }}
           >
             {/* Header */}
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-700/50 bg-slate-800/80 backdrop-blur-sm">
