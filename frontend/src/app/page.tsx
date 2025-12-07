@@ -2,7 +2,7 @@
 
 import { CopilotChat } from "@copilotkit/react-ui";
 import { useCopilotAction } from "@copilotkit/react-core";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 // Institution categories with icons
 const INSTITUTIONS = {
@@ -58,6 +58,35 @@ interface StreamingResult {
   institution: string;
   analysis: any;
   timestamp: Date;
+}
+
+// Helper function to render text with clickable X/Twitter links
+function TextWithLinks({ text }: { text: string }) {
+  // Split text by X/Twitter URLs
+  const urlRegex = /(https?:\/\/(?:x\.com|twitter\.com)\/\w+\/status\/\d+)/g;
+  const parts = text.split(urlRegex);
+
+  return (
+    <>
+      {parts.map((part, idx) => {
+        if (part.match(urlRegex)) {
+          return (
+            <a
+              key={idx}
+              href={part}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
+              onClick={(e) => e.stopPropagation()}
+            >
+              [view]
+            </a>
+          );
+        }
+        return <span key={idx}>{part}</span>;
+      })}
+    </>
+  );
 }
 
 // Reusable Risk Analysis Card Component - matches the agent's display_risk_analysis render
@@ -116,7 +145,9 @@ function RiskAnalysisCard({
       </div>
 
       {/* Summary */}
-      <p className={`${colors.text} text-sm mb-3 font-medium`}>{summary}</p>
+      <p className={`${colors.text} text-sm mb-3 font-medium`}>
+        <TextWithLinks text={summary} />
+      </p>
 
       {/* Metrics Row */}
       <div className="flex flex-wrap gap-3 mb-3 text-xs">
@@ -149,8 +180,8 @@ function RiskAnalysisCard({
           <ul className="text-sm text-gray-700 space-y-1">
             {keyFindings.slice(0, 4).map((finding: string, idx: number) => (
               <li key={idx} className="flex items-start gap-2">
-                <span className="text-gray-400">-</span>
-                <span>{finding}</span>
+                <span className="text-gray-400 flex-shrink-0">-</span>
+                <span><TextWithLinks text={finding} /></span>
               </li>
             ))}
           </ul>
@@ -177,9 +208,13 @@ function RiskAnalysisCard({
                     href={tweet.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-blue-500 hover:underline mt-1 inline-block"
+                    className="text-blue-600 hover:text-blue-800 hover:underline mt-1 inline-flex items-center gap-1 font-medium cursor-pointer"
+                    onClick={(e) => e.stopPropagation()}
                   >
-                    View on X
+                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+                    </svg>
+                    View on X →
                   </a>
                 )}
               </div>
@@ -225,6 +260,12 @@ export default function Home() {
   // Streaming results for chat history (renders as cards)
   const [streamingResults, setStreamingResults] = useState<StreamingResult[]>([]);
 
+  // Continuous monitoring state
+  const [nextCheckTime, setNextCheckTime] = useState<Date | null>(null);
+  const [monitoringQueue, setMonitoringQueue] = useState<string[]>([]);
+  const [currentMonitoringIndex, setCurrentMonitoringIndex] = useState(0);
+  const monitoringIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
   // API health status
   const [apiHealth, setApiHealth] = useState<any>(null);
 
@@ -235,6 +276,115 @@ export default function Home() {
       .then(data => setApiHealth(data))
       .catch(() => setApiHealth({ status: "offline" }));
   }, []);
+
+  // Function to run a monitoring cycle (analyze all selected institutions)
+  const runMonitoringCycle = useCallback(async () => {
+    if (selectedInstitutions.length === 0 || isStreaming) return;
+
+    // Analyze each institution sequentially
+    for (const institution of selectedInstitutions) {
+      setStreamingInstitution(institution);
+      setStreamStatus(`Monitoring: Analyzing ${institution}...`);
+
+      try {
+        // Use SSE to get the result
+        const eventSource = new EventSource(
+          `http://localhost:8000/stream/analyze/${encodeURIComponent(institution)}`
+        );
+
+        await new Promise<void>((resolve, reject) => {
+          eventSource.addEventListener("result", (event) => {
+            const data: AnalysisStage = JSON.parse(event.data);
+            const analysis = data.analysis;
+
+            // Store result
+            setLiveResults(prev => ({
+              ...prev,
+              [institution]: analysis
+            }));
+
+            // Add to streaming results for card display
+            setStreamingResults(prev => [
+              ...prev,
+              {
+                id: `monitor-${institution}-${Date.now()}`,
+                institution,
+                analysis,
+                timestamp: new Date()
+              }
+            ]);
+          });
+
+          eventSource.addEventListener("done", () => {
+            eventSource.close();
+            resolve();
+          });
+
+          eventSource.addEventListener("error", () => {
+            eventSource.close();
+            resolve(); // Continue to next institution even on error
+          });
+
+          eventSource.onerror = () => {
+            eventSource.close();
+            resolve();
+          };
+
+          // Timeout after 60 seconds per institution
+          setTimeout(() => {
+            eventSource.close();
+            resolve();
+          }, 60000);
+        });
+
+        // Small delay between institutions to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      } catch (error) {
+        console.error(`Error monitoring ${institution}:`, error);
+      }
+    }
+
+    setStreamingInstitution(null);
+    setStreamStatus("");
+    setLastMonitorTime(new Date());
+
+    // Calculate next check time
+    const nextTime = new Date(Date.now() + monitoringInterval * 60 * 1000);
+    setNextCheckTime(nextTime);
+  }, [selectedInstitutions, isStreaming, monitoringInterval]);
+
+  // Continuous monitoring effect
+  useEffect(() => {
+    if (isMonitoring && selectedInstitutions.length > 0) {
+      // Run immediately on first enable
+      runMonitoringCycle();
+
+      // Set up interval for subsequent checks
+      const intervalMs = monitoringInterval * 60 * 1000;
+      monitoringIntervalRef.current = setInterval(() => {
+        runMonitoringCycle();
+      }, intervalMs);
+
+      // Calculate initial next check time
+      const nextTime = new Date(Date.now() + intervalMs);
+      setNextCheckTime(nextTime);
+
+      return () => {
+        if (monitoringIntervalRef.current) {
+          clearInterval(monitoringIntervalRef.current);
+          monitoringIntervalRef.current = null;
+        }
+        setNextCheckTime(null);
+      };
+    } else {
+      // Clear interval when monitoring is disabled
+      if (monitoringIntervalRef.current) {
+        clearInterval(monitoringIntervalRef.current);
+        monitoringIntervalRef.current = null;
+      }
+      setNextCheckTime(null);
+    }
+  }, [isMonitoring, selectedInstitutions.length, monitoringInterval, runMonitoringCycle]);
 
   // SSE streaming function - results render as cards above chat
   const streamAnalysis = useCallback(async (institution: string) => {
@@ -405,21 +555,19 @@ export default function Home() {
                   <button
                     key={inst}
                     onClick={() => toggleInstitution(inst)}
-                    className={`px-2.5 py-1 text-xs rounded-full transition-all ${
-                      selectedInstitutions.includes(inst)
-                        ? 'bg-indigo-600 text-white'
-                        : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-                    } ${liveResults[inst] ? 'ring-2 ring-green-400' : ''}`}
+                    className={`px-2.5 py-1 text-xs rounded-full transition-all ${selectedInstitutions.includes(inst)
+                      ? 'bg-indigo-600 text-white'
+                      : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                      } ${liveResults[inst] ? 'ring-2 ring-green-400' : ''}`}
                   >
                     {inst}
                     {liveResults[inst] && (
-                      <span className={`ml-1 ${
-                        liveResults[inst].risk_level === 'HIGH' ? 'text-red-300' :
+                      <span className={`ml-1 ${liveResults[inst].risk_level === 'HIGH' ? 'text-red-300' :
                         liveResults[inst].risk_level === 'MEDIUM' ? 'text-yellow-300' :
-                        'text-green-300'
-                      }`}>
+                          'text-green-300'
+                        }`}>
                         {liveResults[inst].risk_level === 'HIGH' ? '!' :
-                         liveResults[inst].risk_level === 'MEDIUM' ? '?' : ''}
+                          liveResults[inst].risk_level === 'MEDIUM' ? '?' : ''}
                       </span>
                     )}
                   </button>
@@ -449,14 +597,12 @@ export default function Home() {
               <button
                 onClick={() => setIsMonitoring(!isMonitoring)}
                 disabled={selectedInstitutions.length === 0}
-                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                  isMonitoring ? 'bg-green-600' : 'bg-slate-600'
-                } ${selectedInstitutions.length === 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${isMonitoring ? 'bg-green-600' : 'bg-slate-600'
+                  } ${selectedInstitutions.length === 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
                 <span
-                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                    isMonitoring ? 'translate-x-6' : 'translate-x-1'
-                  }`}
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${isMonitoring ? 'translate-x-6' : 'translate-x-1'
+                    }`}
                 />
               </button>
             </div>
@@ -468,25 +614,52 @@ export default function Home() {
                 onChange={(e) => setMonitoringInterval(Number(e.target.value))}
                 className="w-full bg-slate-700 text-white text-sm rounded px-3 py-2 border border-slate-600"
               >
-                <option value={1}>1 minute (SSE)</option>
+                <option value={1}>1 minute</option>
                 <option value={5}>5 minutes</option>
                 <option value={10}>10 minutes</option>
                 <option value={15}>15 minutes</option>
                 <option value={30}>30 minutes</option>
                 <option value={60}>1 hour</option>
+                <option value={360}>6 hours</option>
+                <option value={720}>12 hours</option>
+                <option value={1440}>Daily (24 hours)</option>
+                <option value={10080}>Weekly</option>
               </select>
             </div>
 
             {isMonitoring && (
-              <div className="text-xs text-green-400 flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
-                Monitoring {selectedInstitutions.length} institutions
+              <div className="space-y-2">
+                <div className="text-xs text-green-400 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
+                  Monitoring {selectedInstitutions.length} institutions
+                </div>
+                {streamingInstitution && (
+                  <div className="text-xs text-blue-400 flex items-center gap-2">
+                    <div className="w-3 h-3 border border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+                    Analyzing: {streamingInstitution}
+                  </div>
+                )}
+                {nextCheckTime && !streamingInstitution && (
+                  <div className="text-xs text-slate-400">
+                    Next check: {nextCheckTime.toLocaleTimeString()}
+                  </div>
+                )}
               </div>
             )}
 
             {lastMonitorTime && (
               <div className="text-xs text-slate-500 mt-2">
                 Last check: {lastMonitorTime.toLocaleTimeString()}
+              </div>
+            )}
+
+            {/* Interval info for longer periods */}
+            {monitoringInterval >= 360 && (
+              <div className="text-xs text-slate-500 mt-1">
+                {monitoringInterval === 360 && "Every 6 hours"}
+                {monitoringInterval === 720 && "Every 12 hours"}
+                {monitoringInterval === 1440 && "Once daily"}
+                {monitoringInterval === 10080 && "Once weekly"}
               </div>
             )}
           </div>
@@ -606,16 +779,20 @@ export default function Home() {
               <div className="space-y-4">
                 {streamingResults.map((result) => {
                   const analysis = result.analysis;
-                  // Parse evidence tweets from sample_posts
+                  // Parse evidence tweets from sample_posts - handle URLs in parentheses or standalone
                   const evidenceTweets = analysis?.sample_posts?.slice(0, 3).map((post: string) => {
-                    const urlMatch = post.match(/https:\/\/x\.com\/(\w+)\/status\/\d+/);
+                    // Match X/Twitter URLs - handle parentheses, brackets, and various formats
+                    const urlMatch = post.match(/https?:\/\/(?:x\.com|twitter\.com)\/(\w+)\/status\/(\d+)/);
                     const author = urlMatch ? `@${urlMatch[1]}` : 'Unknown';
-                    const text = post.replace(/https:\/\/x\.com\/\S+/g, '').trim();
+                    // Remove all URLs from text for cleaner display
+                    const text = post.replace(/https?:\/\/(?:x\.com|twitter\.com)\/\S+/g, '').replace(/[()[\]]/g, ' ').trim();
+                    // Construct clean URL
+                    const cleanUrl = urlMatch ? `https://x.com/${urlMatch[1]}/status/${urlMatch[2]}` : undefined;
                     return {
                       author,
                       text: text.slice(0, 200),
-                      url: urlMatch ? urlMatch[0] : undefined,
-                      verified: post.includes('[verified]') || post.includes('✓')
+                      url: cleanUrl,
+                      verified: post.includes('[verified]') || post.includes('✓') || post.includes('verified')
                     };
                   }) || [];
 
