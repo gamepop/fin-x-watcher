@@ -507,7 +507,16 @@ class XAPIClient:
             if backfill_minutes:
                 stream_kwargs['backfill_minutes'] = min(backfill_minutes, 5)
 
-            for post_response in self.client.stream.posts(**stream_kwargs):
+            stream_iter = iter(self.client.stream.posts(**stream_kwargs))
+            while True:
+                try:
+                    post_response = next(stream_iter)
+                except StopIteration:
+                    break
+                except UnicodeDecodeError:
+                    # Skip malformed UTF-8 chunk while iterating stream
+                    continue
+
                 try:
                     data = post_response.model_dump() if hasattr(post_response, 'model_dump') else dict(post_response)
 
