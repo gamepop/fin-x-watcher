@@ -13,7 +13,7 @@ REAL-TIME RESPONSIVENESS FEATURES:
 import os
 import json
 import asyncio
-from typing import List, Optional, AsyncGenerator
+from typing import List, Optional, AsyncGenerator, Dict
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 
@@ -203,7 +203,7 @@ app.add_middleware(
 sentinel_agent = create_sentinel_agent()
 adk_agent = ADKAgent(
     adk_agent=sentinel_agent,
-    app_name="financial_sentinel",
+    app_name="agents",  # align with ADK runner's detected root app name to avoid mismatch
     user_id="web_user",
     session_timeout_seconds=3600,
     use_in_memory_services=True
@@ -327,6 +327,36 @@ async def generate_analysis_stream(institution: str) -> AsyncGenerator[str, None
 
         # Stage 6: Results
         risk_level = analysis.get("risk_level", "UNKNOWN")
+        
+        # Send Slack alert for MEDIUM or HIGH risk
+        if risk_level in ["MEDIUM", "HIGH"]:
+            try:
+                summary = analysis.get("summary") or analysis.get("key_findings", [])
+                if isinstance(summary, list):
+                    summary = "; ".join(summary[:3])  # Take first 3 findings
+                if not summary or len(summary) < 10:
+                    summary = f"Risk level {risk_level} detected for {institution}"
+                
+                # Get source link from evidence tweets if available
+                source_link = None
+                evidence_tweets = analysis.get("evidence_tweets", [])
+                if evidence_tweets and len(evidence_tweets) > 0:
+                    source_link = evidence_tweets[0].get("url")
+                
+                # Call send_alert in thread pool to avoid blocking
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(
+                    None,
+                    send_alert,
+                    institution,
+                    risk_level,
+                    summary[:500],  # Limit length
+                    source_link
+                )
+            except Exception as e:
+                # Don't fail the stream if Slack fails
+                pass
+        
         yield f"event: result\ndata: {json.dumps({'stage': 'complete', 'institution': institution, 'risk_level': risk_level, 'analysis': analysis, 'tweet_count': tweet_count, 'data_source': 'X API v2 + Grok', 'timestamp': timestamp})}\n\n"
 
     except Exception as e:
@@ -350,6 +380,32 @@ async def generate_analysis_stream(institution: str) -> AsyncGenerator[str, None
             analysis = await loop.run_in_executor(None, _grok_live_search_analysis, institution)
 
             risk_level = analysis.get("risk_level", "UNKNOWN")
+            
+            # Send Slack alert for MEDIUM or HIGH risk (fallback path)
+            if risk_level in ["MEDIUM", "HIGH"]:
+                try:
+                    summary = analysis.get("summary") or analysis.get("key_findings", [])
+                    if isinstance(summary, list):
+                        summary = "; ".join(summary[:3])
+                    if not summary or len(summary) < 10:
+                        summary = f"Risk level {risk_level} detected for {institution}"
+                    
+                    source_link = None
+                    evidence_tweets = analysis.get("evidence_tweets", [])
+                    if evidence_tweets and len(evidence_tweets) > 0:
+                        source_link = evidence_tweets[0].get("url")
+                    
+                    await loop.run_in_executor(
+                        None,
+                        send_alert,
+                        institution,
+                        risk_level,
+                        summary[:500],
+                        source_link
+                    )
+                except Exception as e:
+                    pass
+            
             yield f"event: result\ndata: {json.dumps({'stage': 'complete', 'institution': institution, 'risk_level': risk_level, 'analysis': analysis, 'data_source': 'Grok Live Search (X API fallback)', 'fallback_reason': rate_limit_error, 'timestamp': timestamp})}\n\n"
 
         except Exception as fallback_error:
@@ -581,10 +637,40 @@ class MonitorRequest(BaseModel):
     institutions: List[str]
 
 
+# ================= Polling fallback constants =================
+POLL_BATCHES = [
+    # Traditional Banks
+    ["Chase", "Bank of America", "Wells Fargo", "Citibank", "Capital One", "US Bank", "PNC Bank"],
+    # Crypto Exchanges
+    ["Coinbase", "Binance", "Kraken", "Gemini", "Crypto.com", "KuCoin", "Bitfinex"],
+    # Crypto Wallets
+    ["MetaMask", "Phantom", "Ledger", "Trust Wallet", "Coinbase Wallet"],
+    # Stock Trading
+    ["Robinhood", "Webull", "E*TRADE", "Fidelity", "Charles Schwab", "TD Ameritrade", "Interactive Brokers"],
+    # Robo-Advisors
+    ["Wealthfront", "Betterment", "Acorns", "SoFi Invest", "Ellevest"],
+    # Payment Apps
+    ["Venmo", "Cash App", "PayPal", "Zelle", "Apple Pay"],
+    # Neobanks
+    ["Chime", "SoFi", "Revolut", "Current", "Varo"],
+]
+
+FALLBACK_QUERY = "(finance OR banking OR markets OR stocks OR crypto OR fintech)"
+
+# Max tweets to send to Grok relevance check per poll (to limit cost)
+GROK_MAX_CHECKS = 10
+
+
 class ContinueAnalysisRequest(BaseModel):
     """Request for continuing analysis session."""
     institution: str
     follow_up: str
+
+
+class PollRequest(BaseModel):
+    """Request for polling tweets via search_recent."""
+    institutions: List[str] = []
+    max_results: int = 20
 
 
 @app.post("/monitor/start")
@@ -620,6 +706,170 @@ async def start_monitor(request: MonitorRequest):
             "error": str(e),
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
+
+
+def _build_poll_queries(institutions: List[str]) -> List[str]:
+    """
+    Build per-institution queries with risk keywords to reduce noise.
+    Each query is of the form: "Name" (kw1 OR kw2 ...) lang:en -is:retweet
+    """
+    queries: List[str] = []
+    for name in institutions or []:
+        ctx = get_institution_context(name)
+        risk_keywords = ctx.get("risk_keywords", [])[:4]
+        keyword_clause = ""
+        if risk_keywords:
+            keyword_clause = f" ({' OR '.join(risk_keywords)})"
+        q = f"\"{name}\"{keyword_clause} lang:en -is:retweet"
+        queries.append(q)
+
+    # If none provided, fall back to batches for broad monitoring
+    if not queries:
+        for batch in POLL_BATCHES:
+            if batch:
+                queries.append(" OR ".join(f"\"{n}\"" for n in batch) + " lang:en -is:retweet")
+    return queries
+
+
+def _grok_relevance_filter(tweets: List[Dict], institutions: List[str]) -> List[Dict]:
+    """
+    Use Grok to keep only tweets that are financially relevant to the selected institutions.
+    Caps checks to GROK_MAX_CHECKS for cost control; if Grok fails, returns original list.
+    """
+    if not tweets:
+        return tweets
+
+    try:
+        grok = GrokClient()
+    except Exception:
+        return tweets  # if Grok not available, return original
+
+    kept: List[Dict] = []
+    checks = 0
+    inst_list = ", ".join(institutions) if institutions else "financial institutions"
+
+    for t in tweets:
+        if checks >= GROK_MAX_CHECKS:
+            kept.append(t)
+            continue
+        text = t.get("text") or ""
+        if not text.strip():
+            kept.append(t)  # keep empty-text tweets without Grok call
+            continue
+        prompt = (
+            "You are filtering tweets for financial/news relevance.\n"
+            f"Institutions of interest: {inst_list}\n"
+            "Tweet:\n"
+            f"{text}\n\n"
+            "Answer with a single JSON object: {\"relevant\": true|false} "
+            "where relevant means the tweet is about finance/markets/companies or the listed institutions."
+        )
+        try:
+            resp = grok.client.chat.completions.create(
+                model="grok-4-1-mini",
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0,
+                max_tokens=10,
+            )
+            content = resp.choices[0].message.content if resp and resp.choices else ""
+            is_relevant = False
+            if content:
+                try:
+                    obj = json.loads(content.strip())
+                    is_relevant = bool(obj.get("relevant"))
+                except Exception:
+                    is_relevant = "true" in content.lower()
+            if is_relevant:
+                kept.append(t)
+        except Exception:
+            # On Grok error, drop the tweet to avoid leaking non-relevant content
+            continue
+        checks += 1  # count after processing attempt (one per tweet)
+
+    return kept
+
+
+@app.post("/monitor/poll")
+async def poll_recent_tweets(request: PollRequest):
+    """
+    Poll recent tweets using search_recent (fallback when filtered stream is unavailable).
+
+    - Batches institution queries to avoid 400 (too long) errors.
+    - Falls back to a broad finance/markets query if no institution hits.
+    """
+    x_client = XAPIClient()
+    queries = _build_poll_queries(request.institutions)
+    tweets: List[Dict] = []
+    seen_ids = set()
+    query_used = None
+
+    def normalize(tweet: Dict) -> Dict:
+        txt = tweet.get("text") or ""
+        author_user = tweet.get("author_username") or "unknown"
+        inst_match = None
+        for name in request.institutions:
+            if name.lower() in txt.lower():
+                inst_match = name
+                break
+        return {
+            "id": tweet.get("id"),
+            "text": txt,
+            "author": f"@{author_user}",
+            "author_name": author_user,
+            "author_verified": tweet.get("author_verified", False),
+            "author_followers": tweet.get("author_followers", 0),
+            "url": tweet.get("url"),
+            "timestamp": tweet.get("created_at"),
+            "institution": inst_match,
+            "engagement": {
+                "retweets": tweet.get("retweets", 0),
+                "likes": tweet.get("likes", 0),
+                "replies": tweet.get("replies", 0),
+            },
+        }
+
+    try:
+        # Try institution batches first
+        for q in queries:
+            try:
+                query_used = q
+                results = x_client.search_recent_tweets(q, max_results=request.max_results)
+                for t in results:
+                    tid = t.get("id")
+                    if tid and tid not in seen_ids:
+                        seen_ids.add(tid)
+                        tweets.append(normalize(t))
+            except Exception:
+                continue
+
+        # If still nothing, fallback to broad finance query
+        if not tweets:
+            try:
+                query_used = FALLBACK_QUERY
+                results = x_client.search_recent_tweets(FALLBACK_QUERY, max_results=request.max_results)
+                for t in results:
+                    tid = t.get("id")
+                    if tid and tid not in seen_ids:
+                        seen_ids.add(tid)
+                        tweets.append(normalize(t))
+            except Exception as exc:
+                return {"status": "error", "error": str(exc)}
+
+        # Grok relevance filter to reduce unrelated tweets
+        tweets = _grok_relevance_filter(tweets, request.institutions)
+
+        tweets.sort(key=lambda t: t.get("timestamp") or "", reverse=True)
+
+        return {
+            "status": "ok",
+            "count": len(tweets),
+            "query_used": query_used,
+            "tweets": tweets
+        }
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
 
 
 @app.get("/monitor/stream")
@@ -666,24 +916,197 @@ async def stream_monitor_events():
         stop_event = asyncio.Event()
 
         def stream_worker():
-            """Worker that runs blocking stream and puts events in queue."""
-            try:
-                for post in _stream_monitor.x_client.stream_posts(
-                    backfill_minutes=0,
-                    include_user_data=True
-                ):
-                    if stop_event.is_set():
-                        break
-                    # Put event in queue (thread-safe)
-                    asyncio.run_coroutine_threadsafe(
-                        event_queue.put(post),
-                        loop
+            """Worker that tries filtered stream first, then falls back to polling."""
+            import time as time_module
+
+            stream_timeout = 30  # seconds to wait for filtered stream before fallback
+            polling_interval = 15  # seconds between polls
+
+            def poll_for_tweets():
+                """Poll using search API."""
+                institutions = list(_stream_monitor.monitored_institutions.keys())
+                if not institutions:
+                    return []
+
+                try:
+                    # Build query for all institutions
+                    query_parts = [f'"{inst}"' for inst in institutions[:5]]  # Limit to 5 to avoid query length issues
+                    query = f"({' OR '.join(query_parts)}) lang:en -is:retweet"
+
+                    tweets = _stream_monitor.x_client.search_recent_tweets(
+                        query=query,
+                        max_results=20,
+                        hours_back=1,
+                        sort_order="recency"
                     )
-            except Exception as e:
+                    return tweets
+                except Exception as e:
+                    if "rate limit" not in str(e).lower():
+                        asyncio.run_coroutine_threadsafe(
+                            event_queue.put({"type": "info", "message": f"Poll error: {str(e)[:100]}"}),
+                            loop
+                        )
+                    return []
+
+            def try_filtered_stream():
+                """Try to use filtered stream with timeout. Returns True if successful, False to fallback."""
+                import threading
+                import queue as thread_queue
+
                 asyncio.run_coroutine_threadsafe(
-                    event_queue.put({"type": "error", "error": str(e)}),
+                    event_queue.put({"type": "info", "message": f"Trying filtered stream (timeout: {stream_timeout}s)..."}),
                     loop
                 )
+
+                # Use a thread-safe queue and timeout to handle blocking stream
+                stream_data_queue = thread_queue.Queue()
+                stream_stop = threading.Event()
+                got_data = threading.Event()
+
+                def stream_reader():
+                    """Read from stream in separate thread."""
+                    try:
+                        for post_response in _stream_monitor.x_client.client.stream.posts():
+                            if stream_stop.is_set():
+                                break
+                            got_data.set()  # Signal that we got data
+                            stream_data_queue.put(("data", post_response))
+                        stream_data_queue.put(("done", None))
+                    except Exception as e:
+                        stream_data_queue.put(("error", e))
+
+                # Start stream reader thread
+                reader_thread = threading.Thread(target=stream_reader, daemon=True)
+                reader_thread.start()
+
+                try:
+                    tweet_count = 0
+                    deadline = time_module.time() + stream_timeout
+
+                    while time_module.time() < deadline or tweet_count > 0:
+                        if stop_event.is_set():
+                            stream_stop.set()
+                            return True  # stopped by user
+
+                        try:
+                            # Wait for data with short timeout to allow checking deadline
+                            msg_type, payload = stream_data_queue.get(timeout=1.0)
+
+                            if msg_type == "error":
+                                raise payload
+                            elif msg_type == "done":
+                                return True  # stream ended normally
+                            elif msg_type == "data":
+                                # Process the tweet
+                                data = payload.model_dump() if hasattr(payload, 'model_dump') else dict(payload)
+
+                                # Validate data
+                                if isinstance(data, dict) and data.get("error"):
+                                    asyncio.run_coroutine_threadsafe(
+                                        event_queue.put({"type": "info", "message": f"Stream error: {str(data.get('error'))[:100]}"}),
+                                        loop
+                                    )
+                                    stream_stop.set()
+                                    return False  # fallback
+
+                                if not isinstance(data, dict) or not data.get("data"):
+                                    continue
+
+                                tweet_data = data.get("data", {})
+                                if isinstance(tweet_data, dict):
+                                    tweet_count += 1
+                                    # Extend deadline on successful data
+                                    deadline = time_module.time() + stream_timeout
+
+                                    # Format tweet for frontend
+                                    tweet = {
+                                        "id": tweet_data.get("id"),
+                                        "text": tweet_data.get("text", ""),
+                                        "author_id": tweet_data.get("author_id"),
+                                        "created_at": tweet_data.get("created_at"),
+                                        "source": "filtered_stream"
+                                    }
+                                    asyncio.run_coroutine_threadsafe(
+                                        event_queue.put(tweet),
+                                        loop
+                                    )
+
+                        except thread_queue.Empty:
+                            # No data yet, check if we should timeout
+                            if time_module.time() >= deadline and tweet_count == 0:
+                                asyncio.run_coroutine_threadsafe(
+                                    event_queue.put({"type": "info", "message": f"No data from filtered stream after {stream_timeout}s, falling back to polling"}),
+                                    loop
+                                )
+                                stream_stop.set()
+                                return False  # timeout, fallback to polling
+
+                    # If we got here with data, keep streaming
+                    return True
+
+                except Exception as e:
+                    error_str = str(e).lower()
+                    if "toomanyconnections" in error_str or "429" in error_str:
+                        asyncio.run_coroutine_threadsafe(
+                            event_queue.put({"type": "info", "message": "Filtered stream unavailable (TooManyConnections), falling back to polling"}),
+                            loop
+                        )
+                    elif "401" in error_str or "unauthorized" in error_str:
+                        asyncio.run_coroutine_threadsafe(
+                            event_queue.put({"type": "info", "message": "Filtered stream auth error, falling back to polling"}),
+                            loop
+                        )
+                    else:
+                        asyncio.run_coroutine_threadsafe(
+                            event_queue.put({"type": "info", "message": f"Stream error: {str(e)[:100]}, falling back to polling"}),
+                            loop
+                        )
+                    stream_stop.set()
+                    return False  # fallback to polling
+                finally:
+                    stream_stop.set()
+
+            # First, try filtered stream
+            stream_success = try_filtered_stream()
+
+            if stream_success or stop_event.is_set():
+                return  # stream worked or user stopped
+
+            # Fallback to polling
+            asyncio.run_coroutine_threadsafe(
+                event_queue.put({"type": "info", "message": "Using search API polling for live updates (every 15s)"}),
+                loop
+            )
+
+            seen_tweet_ids = set()
+            while not stop_event.is_set():
+                # Poll for tweets
+                tweets = poll_for_tweets()
+                new_count = 0
+                for tweet in tweets:
+                    if stop_event.is_set():
+                        break
+                    tweet_id = tweet.get("id")
+                    if tweet_id and tweet_id not in seen_tweet_ids:
+                        seen_tweet_ids.add(tweet_id)
+                        new_count += 1
+                        # Keep seen_ids bounded
+                        if len(seen_tweet_ids) > 1000:
+                            seen_tweet_ids = set(list(seen_tweet_ids)[-500:])
+                        tweet["source"] = "search_api"
+                        asyncio.run_coroutine_threadsafe(
+                            event_queue.put(tweet),
+                            loop
+                        )
+
+                if new_count > 0:
+                    asyncio.run_coroutine_threadsafe(
+                        event_queue.put({"type": "info", "message": f"Found {new_count} new tweets"}),
+                        loop
+                    )
+
+                # Wait before next poll
+                time_module.sleep(polling_interval)
 
         # Start stream worker in background
         future = loop.run_in_executor(executor, stream_worker)
@@ -706,6 +1129,9 @@ async def stream_monitor_events():
 
                     if event.get("error"):
                         yield f"event: error\ndata: {json.dumps(event)}\n\n"
+                    elif event_type == "info":
+                        # Info message (e.g., fallback to polling, stream status)
+                        yield f"event: info\ndata: {json.dumps(event)}\n\n"
                     elif event_type == "alert":
                         # High-urgency or high-engagement alert with Grok analysis
                         yield f"event: alert\ndata: {json.dumps(event)}\n\n"

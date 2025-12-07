@@ -328,7 +328,7 @@ class XAPIClient:
 
     # -------------------------------------------------------------------------
     # Endpoint 2: Tweet Volume/Counts (Trend Detection)
-    # Note: xdk may not support counts endpoint, using fallback
+    # Uses X API v2 REST endpoint directly for accurate velocity calculation
     # -------------------------------------------------------------------------
 
     @with_retry(max_attempts=3, exceptions=(Exception,))
@@ -339,49 +339,95 @@ class XAPIClient:
         hours_back: int = 24
     ) -> Dict[str, Any]:
         """
-        Get tweet volume over time for trend detection.
+        Get tweet volume over time for trend detection using X API v2 counts endpoint.
 
-        Note: Falls back to counting search results if counts endpoint unavailable.
+        Uses direct REST API call to /tweets/counts/recent for accurate velocity calculation.
 
         Args:
             query: Search query
             granularity: "minute", "hour", or "day"
-            hours_back: How far back to count
+            hours_back: How far back to count (max 168 hours / 7 days)
 
         Returns:
-            Volume data with trend analysis
+            Volume data with trend analysis including velocity_change_percent
         """
         try:
-            # Try to use search results to estimate volume
-            # xdk auto-pagination makes this efficient
-            tweet_count = 0
-            for page in self.client.posts.search_recent(
-                query=f"{query} -is:retweet lang:en",
-                max_results=100
-            ):
-                page_data = page.model_dump() if hasattr(page, 'model_dump') else dict(page)
-                if page_data.get('data'):
-                    tweet_count += len(page_data['data'])
-                if tweet_count >= 100:  # Sample limit
-                    break
+            import requests
+            from datetime import datetime, timedelta, timezone
 
+            # X API v2 counts endpoint
+            url = "https://api.x.com/2/tweets/counts/recent"
+
+            # Calculate time window
+            now = datetime.now(timezone.utc)
+            start_time = (now - timedelta(hours=min(hours_back, 168))).isoformat()
+
+            headers = {
+                "Authorization": f"Bearer {self.bearer_token}"
+            }
+
+            params = {
+                "query": f"{query} -is:retweet lang:en",
+                "granularity": granularity,
+                "start_time": start_time
+            }
+
+            response = requests.get(url, headers=headers, params=params, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+
+            # Extract time series data
+            if data.get('data') and len(data['data']) >= 2:
+                time_series = data['data']
+                total_count = data.get('meta', {}).get('total_tweet_count', 0)
+
+                # Calculate velocity: compare recent half vs older half
+                midpoint = len(time_series) // 2
+                recent_volume = sum(bucket.get('tweet_count', 0) for bucket in time_series[midpoint:])
+                older_volume = sum(bucket.get('tweet_count', 0) for bucket in time_series[:midpoint])
+
+                # Calculate velocity percentage
+                if older_volume > 0:
+                    velocity = ((recent_volume - older_volume) / older_volume) * 100
+                else:
+                    velocity = 100 if recent_volume > 0 else 0
+
+                # Spike detection: >50% increase
+                is_spiking = velocity > 50
+
+                return {
+                    "total_count": total_count,
+                    "time_series": time_series,
+                    "velocity_change_percent": round(velocity, 1),
+                    "is_spiking": is_spiking,
+                    "recent_volume": recent_volume,
+                    "older_volume": older_volume,
+                    "granularity": granularity,
+                    "hours_analyzed": hours_back,
+                    "data_points": len(time_series)
+                }
+
+            # Insufficient data - fallback
             return {
-                "total_count": tweet_count,
-                "time_series": [],
+                "total_count": data.get('meta', {}).get('total_tweet_count', 0),
+                "time_series": data.get('data', []),
                 "velocity_change_percent": 0,
-                "is_spiking": tweet_count > 50,  # Simple spike detection
+                "is_spiking": data.get('meta', {}).get('total_tweet_count', 0) > 50,
                 "granularity": granularity,
                 "hours_analyzed": hours_back,
-                "note": "Estimated from search results (xdk)"
+                "note": "Insufficient data for velocity calculation"
             }
 
         except Exception as e:
+            # Network error or API failure - return safe defaults
             return {
                 "total_count": 0,
                 "time_series": [],
                 "velocity_change_percent": 0,
                 "is_spiking": False,
-                "error": str(e)
+                "error": str(e),
+                "granularity": granularity,
+                "hours_analyzed": hours_back
             }
 
     # -------------------------------------------------------------------------
@@ -507,81 +553,106 @@ class XAPIClient:
             if backfill_minutes:
                 stream_kwargs['backfill_minutes'] = min(backfill_minutes, 5)
 
-            for post_response in self.client.stream.posts(**stream_kwargs):
-                data = post_response.model_dump() if hasattr(post_response, 'model_dump') else dict(post_response)
+            stream_iter = iter(self.client.stream.posts(**stream_kwargs))
+            utf8_error_count = 0
+            while True:
+                try:
+                    post_response = next(stream_iter)
+                except StopIteration:
+                    break
+                except UnicodeDecodeError:
+                    # Skip malformed UTF-8 chunk while iterating stream
+                    utf8_error_count += 1
+                    if utf8_error_count > 10:
+                        # Too many consecutive errors, restart stream
+                        break
+                    continue
 
-                if data.get('data'):
-                    tweet = data['data']
+                # Reset error count on successful read
+                utf8_error_count = 0
 
-                    # Extract public metrics
-                    metrics = tweet.get('public_metrics', {})
-                    total_engagement = (
-                        metrics.get('retweet_count', 0) +
-                        metrics.get('reply_count', 0) +
-                        metrics.get('like_count', 0) +
-                        metrics.get('quote_count', 0)
-                    )
+                try:
+                    try:
+                        data = post_response.model_dump() if hasattr(post_response, 'model_dump') else dict(post_response)
+                    except UnicodeDecodeError:
+                        # Skip this post if model_dump fails with UTF-8 error
+                        continue
 
-                    # Find author in includes
-                    author = None
-                    if data.get('includes', {}).get('users'):
-                        author_id = tweet.get('author_id')
-                        for user in data['includes']['users']:
-                            if user.get('id') == author_id:
-                                author = user
-                                break
+                    if data.get('data'):
+                        tweet = data['data']
 
-                    # Extract entities
-                    entities = tweet.get('entities', {})
-                    hashtags = [h.get('tag') for h in entities.get('hashtags', [])]
-                    mentions = [m.get('username') for m in entities.get('mentions', [])]
-
-                    # Build enriched response
-                    enriched = {
-                        "id": tweet.get('id'),
-                        "text": tweet.get('text'),
-                        "created_at": tweet.get('created_at'),
-                        "author_id": tweet.get('author_id'),
-                        "lang": tweet.get('lang'),
-                        "possibly_sensitive": tweet.get('possibly_sensitive', False),
-                        "matching_rules": data.get('matching_rules', []),
-                        # Engagement metrics
-                        "metrics": {
-                            "retweets": metrics.get('retweet_count', 0),
-                            "replies": metrics.get('reply_count', 0),
-                            "likes": metrics.get('like_count', 0),
-                            "quotes": metrics.get('quote_count', 0),
-                            "total_engagement": total_engagement
-                        },
-                        # Entities
-                        "hashtags": hashtags,
-                        "mentions": mentions,
-                    }
-
-                    # Add author data if available
-                    if author:
-                        author_metrics = author.get('public_metrics', {})
-                        enriched["author"] = {
-                            "id": author.get('id'),
-                            "username": author.get('username'),
-                            "name": author.get('name'),
-                            "verified": author.get('verified', False),
-                            "verified_type": author.get('verified_type'),
-                            "followers": author_metrics.get('followers_count', 0),
-                            "following": author_metrics.get('following_count', 0),
-                        }
-                        # Calculate credibility score
-                        enriched["author"]["credibility_score"] = self._calculate_credibility(
-                            author_metrics.get('followers_count', 0),
-                            author.get('verified', False),
-                            author.get('verified_type')
+                        # Extract public metrics
+                        metrics = tweet.get('public_metrics', {})
+                        total_engagement = (
+                            metrics.get('retweet_count', 0) +
+                            metrics.get('reply_count', 0) +
+                            metrics.get('like_count', 0) +
+                            metrics.get('quote_count', 0)
                         )
 
-                    # Build tweet URL
-                    if enriched.get("author", {}).get("username"):
-                        enriched["url"] = f"https://x.com/{enriched['author']['username']}/status/{tweet.get('id')}"
+                        # Find author in includes
+                        author = None
+                        if data.get('includes', {}).get('users'):
+                            author_id = tweet.get('author_id')
+                            for user in data['includes']['users']:
+                                if user.get('id') == author_id:
+                                    author = user
+                                    break
 
-                    yield enriched
+                        # Extract entities
+                        entities = tweet.get('entities', {})
+                        hashtags = [h.get('tag') for h in entities.get('hashtags', [])]
+                        mentions = [m.get('username') for m in entities.get('mentions', [])]
+
+                        # Build enriched response
+                        enriched = {
+                            "id": tweet.get('id'),
+                            "text": tweet.get('text'),
+                            "created_at": tweet.get('created_at'),
+                            "author_id": tweet.get('author_id'),
+                            "lang": tweet.get('lang'),
+                            "possibly_sensitive": tweet.get('possibly_sensitive', False),
+                            "matching_rules": data.get('matching_rules', []),
+                            # Engagement metrics
+                            "metrics": {
+                                "retweets": metrics.get('retweet_count', 0),
+                                "replies": metrics.get('reply_count', 0),
+                                "likes": metrics.get('like_count', 0),
+                                "quotes": metrics.get('quote_count', 0),
+                                "total_engagement": total_engagement
+                            },
+                            # Entities
+                            "hashtags": hashtags,
+                            "mentions": mentions,
+                        }
+
+                        # Add author data if available
+                        if author:
+                            author_metrics = author.get('public_metrics', {})
+                            enriched["author"] = {
+                                "id": author.get('id'),
+                                "username": author.get('username'),
+                                "name": author.get('name'),
+                                "verified": author.get('verified', False),
+                                "verified_type": author.get('verified_type'),
+                                "followers": author_metrics.get('followers_count', 0),
+                                "following": author_metrics.get('following_count', 0),
+                            }
+                            # Calculate credibility score
+                            enriched["author"]["credibility_score"] = self._calculate_credibility(
+                                author_metrics.get('followers_count', 0),
+                                author.get('verified', False),
+                                author.get('verified_type')
+                            )
+
+                        # Build tweet URL
+                        if enriched.get("author", {}).get("username"):
+                            enriched["url"] = f"https://x.com/{enriched['author']['username']}/status/{tweet.get('id')}"
+
+                        yield enriched
+                except UnicodeDecodeError:
+                    # Skip malformed UTF-8 chunks in the stream to avoid aborting the worker
+                    continue
 
         except Exception as e:
             yield {"error": str(e), "type": "stream_error"}
@@ -2621,10 +2692,13 @@ class StreamMonitor:
                 if len(self.event_buffer) > 500:
                     self.event_buffer = self.event_buffer[-250:]
 
+                # Update stats
+                self._tweets_processed += 1
+
                 yield event
 
-                # Trigger instant Grok analysis for high-urgency or high-engagement
-                if urgency == "high" or total_engagement >= self._high_engagement_threshold:
+                # Trigger instant Grok analysis for high-urgency, medium-urgency, or high-engagement
+                if urgency in ["high", "medium"] or total_engagement >= self._high_engagement_threshold:
                     grok_analysis = None
                     if self.grok_client:
                         try:
@@ -2644,12 +2718,36 @@ class StreamMonitor:
                         except Exception as e:
                             grok_analysis = {"error": str(e)}
 
+                    # Determine risk level for Slack alert
+                    # Only send Slack alerts for MEDIUM or HIGH urgency (not just high engagement)
+                    risk_level = "HIGH" if urgency == "high" else ("MEDIUM" if urgency == "medium" else "LOW")
+                    
+                    if urgency in ["high", "medium"]:
+                        try:
+                            summary = f"{', '.join(risk_signals) if risk_signals else 'Risk signals detected'}"
+                            if grok_analysis and isinstance(grok_analysis, dict):
+                                grok_summary = grok_analysis.get("summary") or grok_analysis.get("analysis", "")
+                                if grok_summary:
+                                    summary = grok_summary[:500]  # Limit length
+                            
+                            # Send Slack notification for MEDIUM or HIGH risk
+                            send_alert(
+                                bank_name=inst_name,
+                                risk_level=risk_level,
+                                summary=summary,
+                                source_link=post.get("url")
+                            )
+                        except Exception as e:
+                            # Don't fail the stream if Slack fails
+                            pass
+
                     yield {
                         "type": "alert",
-                        "alert_reason": "high_urgency" if urgency == "high" else "high_engagement",
-                        "message": f"⚠️ {inst_name}: {', '.join(risk_signals) if risk_signals else 'High engagement detected'}",
+                        "alert_reason": "high_urgency" if urgency == "high" else ("medium_urgency" if urgency == "medium" else "high_engagement"),
+                        "message": f"⚠️ {inst_name}: {', '.join(risk_signals) if risk_signals else 'Risk signals detected'}",
                         "event": event,
                         "grok_analysis": grok_analysis,
+                        "risk_level": risk_level,
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     }
 
