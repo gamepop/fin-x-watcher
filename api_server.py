@@ -902,6 +902,19 @@ async def stream_monitor_events():
                         # Reset error count on successful read
                         utf8_error_count = 0
                         
+                        # Check if post is an error dictionary from stream_posts
+                        if isinstance(post, dict) and post.get("error"):
+                            # Stream error - put it in queue as error event
+                            asyncio.run_coroutine_threadsafe(
+                                event_queue.put({"type": "error", "error": post.get("error")}),
+                                loop
+                            )
+                            continue
+                        
+                        # Skip if post doesn't have required fields (not a valid tweet)
+                        if not isinstance(post, dict) or not post.get("id"):
+                            continue
+                        
                         try:
                             # Put event in queue (thread-safe)
                             asyncio.run_coroutine_threadsafe(
