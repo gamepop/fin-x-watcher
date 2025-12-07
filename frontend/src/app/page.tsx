@@ -52,6 +52,29 @@ interface AnalysisStage {
   analysis?: any;
 }
 
+// Live stream event type
+interface LiveStreamEvent {
+  id: string;
+  type: 'tweet' | 'analysis' | 'spike' | 'error' | 'connected' | 'reconnecting';
+  institution?: string;
+  text?: string;
+  author?: string;
+  author_verified?: boolean;
+  author_followers?: number;
+  engagement?: {
+    retweets: number;
+    likes: number;
+    replies: number;
+  };
+  risk_level?: string;
+  risk_type?: string;
+  urgency?: number;
+  summary?: string;
+  url?: string;
+  timestamp: Date;
+  matched_rules?: string[];
+}
+
 // Streaming result type for chat history
 interface StreamingResult {
   id: string;
@@ -269,6 +292,14 @@ export default function Home() {
   // API health status
   const [apiHealth, setApiHealth] = useState<any>(null);
 
+  // Live stream state
+  const [liveStreamActive, setLiveStreamActive] = useState(false);
+  const [liveStreamEvents, setLiveStreamEvents] = useState<LiveStreamEvent[]>([]);
+  const [liveStreamStats, setLiveStreamStats] = useState<any>(null);
+  const [liveStreamError, setLiveStreamError] = useState<string | null>(null);
+  const liveStreamRef = useRef<EventSource | null>(null);
+  const [showLivePanel, setShowLivePanel] = useState(true);
+
   // Fetch API health on mount
   useEffect(() => {
     fetch("http://localhost:8000/health")
@@ -454,6 +485,224 @@ export default function Home() {
     }
   }, []);
 
+  // Sync stream rules with portfolio and start live stream
+  const startLiveStream = useCallback(async () => {
+    if (selectedInstitutions.length === 0) {
+      setLiveStreamError("Please select at least one institution to monitor");
+      return;
+    }
+
+    setLiveStreamError(null);
+    setLiveStreamActive(true);
+    setLiveStreamEvents([{
+      id: `connecting-${Date.now()}`,
+      type: 'reconnecting',
+      timestamp: new Date(),
+      summary: `Syncing rules for ${selectedInstitutions.length} institutions...`
+    }]);
+
+    try {
+      // First sync rules with portfolio
+      const syncResponse = await fetch("http://localhost:8000/monitor/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ institutions: selectedInstitutions })
+      });
+
+      if (!syncResponse.ok) {
+        throw new Error("Failed to sync stream rules");
+      }
+
+      const syncData = await syncResponse.json();
+      console.log("Synced stream rules:", syncData);
+
+      // Check if there was an X API error (Filtered Stream requires Pro tier)
+      if (syncData.setup_result?.result?.status === "error") {
+        const errorMsg = syncData.setup_result.result.error || "Unknown error";
+        if (errorMsg.includes("400") || errorMsg.includes("Bad Request")) {
+          setLiveStreamEvents(prev => [...prev, {
+            id: `error-${Date.now()}`,
+            type: 'error',
+            timestamp: new Date(),
+            summary: "Filtered Stream API requires X API Pro tier ($5k/month). Using polling mode instead."
+          }]);
+          // Fall back to polling mode - use the continuous monitoring feature
+          setLiveStreamActive(false);
+          setIsMonitoring(true);
+          return;
+        }
+        throw new Error(errorMsg);
+      }
+
+      // Add success event
+      setLiveStreamEvents(prev => [...prev, {
+        id: `synced-${Date.now()}`,
+        type: 'connected',
+        timestamp: new Date(),
+        summary: `Rules synced! Monitoring: ${syncData.added?.join(", ") || selectedInstitutions.join(", ")}`
+      }]);
+
+      // Start SSE connection to live stream
+      if (liveStreamRef.current) {
+        liveStreamRef.current.close();
+      }
+
+      const eventSource = new EventSource("http://localhost:8000/monitor/stream");
+      liveStreamRef.current = eventSource;
+
+      eventSource.addEventListener("connected", (event) => {
+        const data = JSON.parse(event.data);
+        setLiveStreamActive(true);
+        setLiveStreamEvents(prev => [...prev, {
+          id: `connected-${Date.now()}`,
+          type: 'connected',
+          timestamp: new Date(),
+          summary: `Connected! Monitoring ${data.institutions?.length || selectedInstitutions.length} institutions (${data.rules_count || 0} rules)`
+        }]);
+      });
+
+      eventSource.addEventListener("heartbeat", (event) => {
+        const data = JSON.parse(event.data);
+        // Update stats to show we're still connected
+        setLiveStreamStats(prev => ({
+          ...prev,
+          last_heartbeat: data.timestamp,
+          status: data.status
+        }));
+      });
+
+      eventSource.addEventListener("tweet", (event) => {
+        const data = JSON.parse(event.data);
+        const newEvent: LiveStreamEvent = {
+          id: data.tweet_id || `tweet-${Date.now()}`,
+          type: 'tweet',
+          institution: data.matched_rules?.[0]?.tag || data.institution,
+          text: data.text,
+          author: data.author?.username ? `@${data.author.username}` : 'Unknown',
+          author_verified: data.author?.verified,
+          author_followers: data.author?.followers_count,
+          engagement: {
+            retweets: data.metrics?.retweet_count || 0,
+            likes: data.metrics?.like_count || 0,
+            replies: data.metrics?.reply_count || 0
+          },
+          url: data.url,
+          timestamp: new Date(data.created_at || Date.now()),
+          matched_rules: data.matched_rules?.map((r: any) => r.tag)
+        };
+        setLiveStreamEvents(prev => [newEvent, ...prev].slice(0, 100)); // Keep last 100
+      });
+
+      eventSource.addEventListener("analysis", (event) => {
+        const data = JSON.parse(event.data);
+        const newEvent: LiveStreamEvent = {
+          id: `analysis-${Date.now()}`,
+          type: 'analysis',
+          institution: data.institution,
+          risk_level: data.risk_level,
+          risk_type: data.risk_type,
+          urgency: data.urgency,
+          summary: data.summary,
+          text: data.tweet_text,
+          timestamp: new Date()
+        };
+        setLiveStreamEvents(prev => [newEvent, ...prev].slice(0, 100));
+      });
+
+      eventSource.addEventListener("spike", (event) => {
+        const data = JSON.parse(event.data);
+        const newEvent: LiveStreamEvent = {
+          id: `spike-${Date.now()}`,
+          type: 'spike',
+          institution: data.institution,
+          summary: `Volume spike detected! ${data.rate?.toFixed(1) || 0} tweets/min (threshold: ${data.threshold || 5})`,
+          timestamp: new Date()
+        };
+        setLiveStreamEvents(prev => [newEvent, ...prev].slice(0, 100));
+      });
+
+      eventSource.addEventListener("stats", (event) => {
+        const data = JSON.parse(event.data);
+        setLiveStreamStats(data);
+      });
+
+      eventSource.addEventListener("error", (event) => {
+        const data = event.data ? JSON.parse((event as any).data) : { message: "Stream error" };
+        setLiveStreamError(data.message);
+      });
+
+      eventSource.addEventListener("reconnecting", () => {
+        setLiveStreamEvents(prev => [...prev, {
+          id: `reconnect-${Date.now()}`,
+          type: 'reconnecting',
+          timestamp: new Date(),
+          summary: "Reconnecting to stream..."
+        }]);
+      });
+
+      eventSource.onerror = (error) => {
+        console.error("LiveStream SSE error:", error);
+        setLiveStreamError("Connection lost - attempting to reconnect");
+      };
+
+    } catch (error) {
+      console.error("Live stream error:", error);
+      setLiveStreamError(`Failed to start live stream: ${error}`);
+      setLiveStreamEvents(prev => [...prev, {
+        id: `error-${Date.now()}`,
+        type: 'error',
+        timestamp: new Date(),
+        summary: `Error: ${error}`
+      }]);
+      setLiveStreamActive(false);
+    }
+  }, [selectedInstitutions]);
+
+  // Stop live stream
+  const stopLiveStream = useCallback(() => {
+    if (liveStreamRef.current) {
+      liveStreamRef.current.close();
+      liveStreamRef.current = null;
+    }
+    setLiveStreamActive(false);
+    setLiveStreamEvents(prev => [...prev, {
+      id: `disconnected-${Date.now()}`,
+      type: 'error',
+      timestamp: new Date(),
+      summary: "Stream disconnected"
+    }]);
+  }, []);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (liveStreamRef.current) {
+        liveStreamRef.current.close();
+      }
+    };
+  }, []);
+
+  // Fetch live stream stats periodically
+  useEffect(() => {
+    if (!liveStreamActive) return;
+
+    const fetchStats = async () => {
+      try {
+        const response = await fetch("http://localhost:8000/monitor/stats");
+        if (response.ok) {
+          const data = await response.json();
+          setLiveStreamStats(data);
+        }
+      } catch (error) {
+        console.error("Failed to fetch stream stats:", error);
+      }
+    };
+
+    fetchStats();
+    const interval = setInterval(fetchStats, 10000); // Every 10 seconds
+    return () => clearInterval(interval);
+  }, [liveStreamActive]);
+
   // Register enhanced render function for risk analysis - uses shared RiskAnalysisCard component
   useCopilotAction({
     name: "display_risk_analysis",
@@ -576,6 +825,27 @@ export default function Home() {
             </div>
           ))}
 
+          {/* Live Stream Status */}
+          {liveStreamActive && (
+            <div className="mb-4 p-3 rounded-lg bg-emerald-900/30 border border-emerald-700">
+              <div className="flex items-center gap-2 mb-2">
+                <div className="w-3 h-3 rounded-full bg-emerald-400 animate-ping"></div>
+                <span className="text-sm font-medium text-white">Live Stream Active</span>
+              </div>
+              {liveStreamStats && (
+                <div className="grid grid-cols-2 gap-2 text-xs text-emerald-300 mt-2">
+                  <div>Tweets: {liveStreamStats.tweets_processed || 0}</div>
+                  <div>Analyzed: {liveStreamStats.analyses_performed || 0}</div>
+                  <div>Spikes: {liveStreamStats.spikes_detected || 0}</div>
+                  <div>Rules: {liveStreamStats.active_rules || 0}</div>
+                </div>
+              )}
+              {liveStreamError && (
+                <div className="text-xs text-red-400 mt-2">{liveStreamError}</div>
+              )}
+            </div>
+          )}
+
           {/* Streaming Status */}
           {isStreaming && (
             <div className="mb-4 p-3 rounded-lg bg-blue-900/30 border border-blue-700">
@@ -667,6 +937,29 @@ export default function Home() {
           {/* Quick Actions */}
           {selectedInstitutions.length > 0 && (
             <div className="mt-4 space-y-2">
+              {/* Live Stream Button - Primary Action */}
+              <button
+                onClick={() => liveStreamActive ? stopLiveStream() : startLiveStream()}
+                className={`w-full ${liveStreamActive
+                  ? 'bg-red-600 hover:bg-red-700'
+                  : 'bg-emerald-600 hover:bg-emerald-700'} text-white text-sm py-2.5 px-4 rounded-lg transition-colors flex items-center justify-center gap-2 font-medium`}
+              >
+                {liveStreamActive ? (
+                  <>
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+                    </svg>
+                    Stop Live Stream
+                  </>
+                ) : (
+                  <>
+                    <span className="w-3 h-3 rounded-full bg-white animate-pulse"></span>
+                    Start Live Stream
+                  </>
+                )}
+              </button>
+
               <button
                 onClick={() => {
                   if (selectedInstitutions.length > 0 && !isStreaming) {
@@ -679,12 +972,11 @@ export default function Home() {
                 {isStreaming ? (
                   <>
                     <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                    Streaming...
+                    Analyzing...
                   </>
                 ) : (
                   <>
-                    <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse"></span>
-                    Stream Analysis
+                    Quick Analysis
                   </>
                 )}
               </button>
@@ -701,6 +993,7 @@ export default function Home() {
                 onClick={() => {
                   setSelectedInstitutions([]);
                   setLiveResults({});
+                  setLiveStreamEvents([]);
                 }}
                 className="w-full bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm py-2 px-4 rounded-lg transition-colors"
               >
@@ -753,6 +1046,9 @@ export default function Home() {
             <span className="text-xs bg-slate-700 text-slate-300 px-2 py-1 rounded">/tweets/search/recent</span>
             <span className="text-xs bg-slate-700 text-slate-300 px-2 py-1 rounded">/tweets/counts/recent</span>
             <span className="text-xs bg-slate-700 text-slate-300 px-2 py-1 rounded">/users/by</span>
+            <span className={`text-xs px-2 py-1 rounded ${liveStreamActive ? 'bg-emerald-600 text-white animate-pulse' : 'bg-emerald-700 text-white'}`}>
+              Filtered Stream {liveStreamActive && '●'}
+            </span>
             <span className="text-xs bg-purple-700 text-white px-2 py-1 rounded">Viral Scoring</span>
             <span className="text-xs bg-blue-700 text-white px-2 py-1 rounded">SSE Streaming</span>
             <span className="text-xs bg-green-700 text-white px-2 py-1 rounded">Circuit Breaker</span>
@@ -761,6 +1057,197 @@ export default function Home() {
 
         {/* Chat Interface - Results now appear inline in chat */}
         <main className="flex-1 overflow-hidden relative flex flex-col">
+          {/* Live Stream Panel - Real-time filtered stream events */}
+          {(liveStreamActive || liveStreamEvents.length > 0) && showLivePanel && (
+            <div className="bg-slate-900/80 border-b border-emerald-700/50 max-h-[45vh] flex flex-col">
+              {/* Panel Header */}
+              <div className="flex items-center justify-between p-3 bg-emerald-900/30 border-b border-emerald-700/30">
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2">
+                    {liveStreamActive ? (
+                      <span className="w-3 h-3 rounded-full bg-emerald-400 animate-ping"></span>
+                    ) : (
+                      <span className="w-3 h-3 rounded-full bg-slate-500"></span>
+                    )}
+                    <h3 className="text-sm font-semibold text-white">
+                      Live Stream {liveStreamActive ? '(Active)' : '(Stopped)'}
+                    </h3>
+                  </div>
+                  {liveStreamStats && (
+                    <div className="flex gap-3 text-xs text-emerald-300">
+                      <span>{liveStreamStats.tweets_processed || 0} tweets</span>
+                      <span>{liveStreamStats.analyses_performed || 0} analyzed</span>
+                      {liveStreamStats.spikes_detected > 0 && (
+                        <span className="text-yellow-400">{liveStreamStats.spikes_detected} spikes</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setLiveStreamEvents([])}
+                    className="text-xs text-slate-400 hover:text-white px-2 py-1 rounded hover:bg-slate-700"
+                  >
+                    Clear
+                  </button>
+                  <button
+                    onClick={() => setShowLivePanel(false)}
+                    className="text-slate-400 hover:text-white p-1 rounded hover:bg-slate-700"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              {/* Live Events Feed */}
+              <div className="flex-1 overflow-y-auto p-3 space-y-2">
+                {liveStreamEvents.length === 0 ? (
+                  <div className="text-center text-slate-500 py-8">
+                    <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-slate-800 flex items-center justify-center">
+                      <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                      </svg>
+                    </div>
+                    <p className="text-sm">Waiting for live tweets...</p>
+                    <p className="text-xs mt-1">Tweets matching your portfolio will appear here</p>
+                  </div>
+                ) : (
+                  liveStreamEvents.map((event) => (
+                    <div
+                      key={event.id}
+                      className={`rounded-lg p-3 text-sm ${
+                        event.type === 'connected' ? 'bg-emerald-900/40 border border-emerald-700/50' :
+                        event.type === 'reconnecting' ? 'bg-yellow-900/40 border border-yellow-700/50' :
+                        event.type === 'error' ? 'bg-red-900/40 border border-red-700/50' :
+                        event.type === 'spike' ? 'bg-orange-900/40 border border-orange-700/50' :
+                        event.type === 'analysis' ? (
+                          event.risk_level === 'HIGH' ? 'bg-red-900/40 border border-red-700/50' :
+                          event.risk_level === 'MEDIUM' ? 'bg-yellow-900/40 border border-yellow-700/50' :
+                          'bg-green-900/40 border border-green-700/50'
+                        ) :
+                        'bg-slate-800/60 border border-slate-700/50'
+                      }`}
+                    >
+                      {/* Event Header */}
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center gap-2">
+                          {event.type === 'tweet' && (
+                            <>
+                              <svg className="w-4 h-4 text-slate-400" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+                              </svg>
+                              <span className="font-medium text-slate-200">
+                                {event.author}
+                                {event.author_verified && <span className="ml-1 text-blue-400">✓</span>}
+                              </span>
+                              {event.institution && (
+                                <span className="text-xs px-1.5 py-0.5 bg-indigo-900/50 text-indigo-300 rounded">
+                                  {event.institution}
+                                </span>
+                              )}
+                            </>
+                          )}
+                          {event.type === 'analysis' && (
+                            <>
+                              <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                                event.risk_level === 'HIGH' ? 'bg-red-600 text-white' :
+                                event.risk_level === 'MEDIUM' ? 'bg-yellow-600 text-white' :
+                                'bg-green-600 text-white'
+                              }`}>
+                                {event.risk_level} RISK
+                              </span>
+                              <span className="text-slate-300">{event.institution}</span>
+                              {event.risk_type && (
+                                <span className="text-xs text-slate-400">({event.risk_type})</span>
+                              )}
+                            </>
+                          )}
+                          {event.type === 'spike' && (
+                            <>
+                              <span className="px-2 py-0.5 bg-orange-600 text-white rounded text-xs font-medium">SPIKE</span>
+                              <span className="text-orange-300">{event.institution}</span>
+                            </>
+                          )}
+                          {(event.type === 'connected' || event.type === 'reconnecting' || event.type === 'error') && (
+                            <span className={`text-xs ${
+                              event.type === 'connected' ? 'text-emerald-400' :
+                              event.type === 'reconnecting' ? 'text-yellow-400' :
+                              'text-red-400'
+                            }`}>
+                              {event.summary}
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-xs text-slate-500">
+                          {event.timestamp.toLocaleTimeString()}
+                        </span>
+                      </div>
+
+                      {/* Tweet Text */}
+                      {event.text && (
+                        <p className="text-slate-300 text-sm mb-2 line-clamp-2">{event.text}</p>
+                      )}
+
+                      {/* Summary for analysis */}
+                      {event.type === 'analysis' && event.summary && (
+                        <p className="text-slate-300 text-sm mb-2">{event.summary}</p>
+                      )}
+
+                      {/* Engagement & Actions */}
+                      {event.type === 'tweet' && (
+                        <div className="flex items-center justify-between text-xs">
+                          <div className="flex items-center gap-3 text-slate-500">
+                            {event.engagement && (
+                              <>
+                                <span>↻ {event.engagement.retweets}</span>
+                                <span>♥ {event.engagement.likes}</span>
+                                <span>💬 {event.engagement.replies}</span>
+                              </>
+                            )}
+                            {event.author_followers && (
+                              <span className="text-slate-600">{event.author_followers.toLocaleString()} followers</span>
+                            )}
+                          </div>
+                          {event.url && (
+                            <a
+                              href={event.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-400 hover:text-blue-300 flex items-center gap-1"
+                            >
+                              View on X
+                              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                              </svg>
+                            </a>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Collapsed Live Panel Toggle */}
+          {!showLivePanel && (liveStreamActive || liveStreamEvents.length > 0) && (
+            <button
+              onClick={() => setShowLivePanel(true)}
+              className="bg-emerald-900/50 border-b border-emerald-700/50 px-4 py-2 flex items-center justify-center gap-2 hover:bg-emerald-900/70 transition-colors"
+            >
+              {liveStreamActive && <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>}
+              <span className="text-sm text-emerald-300">
+                Show Live Stream ({liveStreamEvents.length} events)
+              </span>
+              <svg className="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+          )}
+
           {/* Streaming Results Cards - Rendered above chat when available */}
           {streamingResults.length > 0 && (
             <div className="bg-slate-800/50 border-b border-slate-700 p-4 max-h-[60vh] overflow-y-auto">
