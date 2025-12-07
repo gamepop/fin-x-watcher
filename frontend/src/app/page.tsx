@@ -1350,7 +1350,7 @@ export default function Home() {
           style={{
             height: 'calc(100vh - 64px)', // align with header height to remove top gap
             overflowY: 'auto',
-            paddingRight: '400px', // keep center width static even if live pane is hidden
+            paddingRight: '320px', // match left pane width so layout stays balanced
           }}
         >
           {/* Dashboard Overview */}
