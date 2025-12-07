@@ -861,38 +861,40 @@ async def stream_monitor_events():
 
         def stream_worker():
             """Worker that runs blocking stream and puts events in queue."""
-            try:
-                stream_iter = iter(
-                    _stream_monitor.x_client.stream_posts(
-                        backfill_minutes=0,
-                        include_user_data=True
-                    )
-                )
-                while True:
-                    try:
-                        post = next(stream_iter)
-                    except StopIteration:
-                        break
-                    except UnicodeDecodeError:
-                        # Skip malformed UTF-8 chunk and keep streaming
-                        continue
-
-                    if stop_event.is_set():
-                        break
-                    try:
-                        # Put event in queue (thread-safe)
-                        asyncio.run_coroutine_threadsafe(
-                            event_queue.put(post),
-                            loop
+            while not stop_event.is_set():
+                try:
+                    stream_iter = iter(
+                        _stream_monitor.x_client.stream_posts(
+                            backfill_minutes=0,
+                            include_user_data=True
                         )
-                    except UnicodeDecodeError:
-                        # Skip malformed UTF-8 chunks without killing the worker
-                        continue
-            except Exception as e:
-                asyncio.run_coroutine_threadsafe(
-                    event_queue.put({"type": "error", "error": str(e)}),
-                    loop
-                )
+                    )
+                    while True:
+                        try:
+                            post = next(stream_iter)
+                        except StopIteration:
+                            break
+                        except UnicodeDecodeError:
+                            # Restart stream on malformed UTF-8 chunk
+                            break
+
+                        if stop_event.is_set():
+                            break
+                        try:
+                            # Put event in queue (thread-safe)
+                            asyncio.run_coroutine_threadsafe(
+                                event_queue.put(post),
+                                loop
+                            )
+                        except UnicodeDecodeError:
+                            # Skip malformed UTF-8 chunks without killing the worker
+                            continue
+                except Exception as e:
+                    asyncio.run_coroutine_threadsafe(
+                        event_queue.put({"type": "error", "error": str(e)}),
+                        loop
+                    )
+                    break
 
         # Start stream worker in background
         future = loop.run_in_executor(executor, stream_worker)
