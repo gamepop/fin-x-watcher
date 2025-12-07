@@ -60,6 +60,34 @@ interface StreamingResult {
   timestamp: Date;
 }
 
+// Webhook event type for real-time push notifications
+interface WebhookEvent {
+  id: string;
+  type: string;
+  institution: string;
+  tweet: {
+    id: string;
+    text: string;
+    author_id: string;
+    created_at: string;
+    public_metrics: {
+      retweet_count: number;
+      reply_count: number;
+      like_count: number;
+      quote_count: number;
+    };
+  };
+  grok_analysis?: {
+    risk_level: string;
+    risk_type: string;
+    summary: string;
+    urgency: number;
+    action_needed: boolean;
+  };
+  received_at: string;
+  timestamp: string;
+}
+
 // Helper function to render text with clickable X/Twitter links
 function TextWithLinks({ text }: { text: string }) {
   // Split text by X/Twitter URLs
@@ -269,6 +297,12 @@ export default function Home() {
   // API health status
   const [apiHealth, setApiHealth] = useState<any>(null);
 
+  // Webhook events state
+  const [webhookEvents, setWebhookEvents] = useState<WebhookEvent[]>([]);
+  const [webhookConnected, setWebhookConnected] = useState(false);
+  const [showWebhookPanel, setShowWebhookPanel] = useState(false);
+  const webhookEventSourceRef = useRef<EventSource | null>(null);
+
   // Fetch API health on mount
   useEffect(() => {
     fetch("http://localhost:8000/health")
@@ -276,6 +310,43 @@ export default function Home() {
       .then(data => setApiHealth(data))
       .catch(() => setApiHealth({ status: "offline" }));
   }, []);
+
+  // Connect to webhook stream when panel is shown
+  useEffect(() => {
+    if (showWebhookPanel && !webhookEventSourceRef.current) {
+      const eventSource = new EventSource("http://localhost:8000/webhooks/x/stream");
+
+      eventSource.addEventListener("connected", () => {
+        setWebhookConnected(true);
+      });
+
+      eventSource.addEventListener("webhook_tweet", (event) => {
+        const data = JSON.parse(event.data);
+        setWebhookEvents(prev => [{
+          id: `${data.tweet?.id || Date.now()}`,
+          ...data
+        }, ...prev].slice(0, 50)); // Keep last 50 events
+      });
+
+      eventSource.addEventListener("keepalive", () => {
+        // Just keep connection alive
+      });
+
+      eventSource.onerror = () => {
+        setWebhookConnected(false);
+      };
+
+      webhookEventSourceRef.current = eventSource;
+    }
+
+    return () => {
+      if (!showWebhookPanel && webhookEventSourceRef.current) {
+        webhookEventSourceRef.current.close();
+        webhookEventSourceRef.current = null;
+        setWebhookConnected(false);
+      }
+    };
+  }, [showWebhookPanel]);
 
   // Function to run a monitoring cycle (analyze all selected institutions)
   const runMonitoringCycle = useCallback(async () => {
@@ -756,8 +827,121 @@ export default function Home() {
             <span className="text-xs bg-purple-700 text-white px-2 py-1 rounded">Viral Scoring</span>
             <span className="text-xs bg-blue-700 text-white px-2 py-1 rounded">SSE Streaming</span>
             <span className="text-xs bg-green-700 text-white px-2 py-1 rounded">Circuit Breaker</span>
+            <button
+              onClick={() => setShowWebhookPanel(!showWebhookPanel)}
+              className={`text-xs px-2 py-1 rounded flex items-center gap-1 transition-colors ${
+                showWebhookPanel
+                  ? 'bg-orange-600 text-white'
+                  : 'bg-orange-700/50 text-orange-300 hover:bg-orange-700'
+              }`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${webhookConnected ? 'bg-green-400 animate-pulse' : 'bg-slate-400'}`}></span>
+              Webhooks {webhookEvents.length > 0 && `(${webhookEvents.length})`}
+            </button>
           </div>
         </header>
+
+        {/* Webhook Events Panel */}
+        {showWebhookPanel && (
+          <div className="bg-slate-800/80 border-b border-orange-700/50 p-4 max-h-[40vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full ${webhookConnected ? 'bg-green-400 animate-pulse' : 'bg-red-400'}`}></span>
+                Real-time Webhook Events
+                <span className="text-xs font-normal text-slate-400">
+                  {webhookConnected ? 'Connected' : 'Disconnected'}
+                </span>
+              </h3>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-400">{webhookEvents.length} events</span>
+                <button
+                  onClick={() => setWebhookEvents([])}
+                  className="text-xs text-slate-400 hover:text-white px-2 py-1 rounded hover:bg-slate-700"
+                >
+                  Clear
+                </button>
+                <button
+                  onClick={() => setShowWebhookPanel(false)}
+                  className="text-xs text-slate-400 hover:text-white p-1 rounded hover:bg-slate-700"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {webhookEvents.length === 0 ? (
+              <div className="text-center py-8 text-slate-400">
+                <div className="text-2xl mb-2">📡</div>
+                <p className="text-sm">Waiting for real-time events...</p>
+                <p className="text-xs mt-1">Events will appear here when X sends webhook notifications</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {webhookEvents.map((event) => (
+                  <div
+                    key={event.id}
+                    className={`p-3 rounded-lg border ${
+                      event.grok_analysis?.risk_level === 'HIGH'
+                        ? 'bg-red-900/30 border-red-700'
+                        : event.grok_analysis?.risk_level === 'MEDIUM'
+                        ? 'bg-yellow-900/30 border-yellow-700'
+                        : 'bg-slate-700/50 border-slate-600'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-medium text-white">{event.institution}</span>
+                        {event.grok_analysis && (
+                          <span className={`text-xs px-1.5 py-0.5 rounded ${
+                            event.grok_analysis.risk_level === 'HIGH'
+                              ? 'bg-red-600 text-white'
+                              : event.grok_analysis.risk_level === 'MEDIUM'
+                              ? 'bg-yellow-600 text-white'
+                              : 'bg-green-600 text-white'
+                          }`}>
+                            {event.grok_analysis.risk_level}
+                          </span>
+                        )}
+                        {event.grok_analysis?.action_needed && (
+                          <span className="text-xs bg-red-600 text-white px-1.5 py-0.5 rounded animate-pulse">
+                            ACTION NEEDED
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-xs text-slate-400">
+                        {new Date(event.received_at).toLocaleTimeString()}
+                      </span>
+                    </div>
+
+                    <p className="text-sm text-slate-300 line-clamp-2">{event.tweet?.text}</p>
+
+                    {event.grok_analysis?.summary && (
+                      <p className="text-xs text-slate-400 mt-1 italic">
+                        Grok: {event.grok_analysis.summary}
+                      </p>
+                    )}
+
+                    <div className="flex items-center gap-3 mt-2 text-xs text-slate-400">
+                      <span>🔄 {event.tweet?.public_metrics?.retweet_count || 0}</span>
+                      <span>❤️ {event.tweet?.public_metrics?.like_count || 0}</span>
+                      <span>💬 {event.tweet?.public_metrics?.reply_count || 0}</span>
+                      {event.tweet?.id && (
+                        <a
+                          href={`https://x.com/i/status/${event.tweet.id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-400 hover:text-blue-300 ml-auto"
+                        >
+                          View on X →
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Chat Interface - Results now appear inline in chat */}
         <main className="flex-1 overflow-hidden relative flex flex-col">

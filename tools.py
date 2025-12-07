@@ -1100,6 +1100,79 @@ Provide your risk assessment applying {inst_type.replace('_', ' ')} analysis con
                 "error": str(e)
             }
 
+    def analyze_single_tweet(
+        self,
+        institution: str,
+        tweet_text: str,
+        metrics: Dict[str, int],
+        model: str = "grok-4-1-fast"
+    ) -> Dict[str, Any]:
+        """
+        Analyze a single tweet for risk assessment (used by webhooks).
+
+        Args:
+            institution: Institution name the tweet mentions
+            tweet_text: The tweet text content
+            metrics: Engagement metrics (retweets, likes, etc.)
+            model: Grok model to use
+
+        Returns:
+            Quick risk assessment for the single tweet
+        """
+        total_engagement = sum(metrics.values())
+
+        system_prompt = """You are a financial risk analyst. Analyze this single tweet about a financial institution for risk indicators.
+
+Respond in JSON format:
+{
+    "risk_level": "HIGH" | "MEDIUM" | "LOW",
+    "risk_type": "crisis" | "complaint" | "concern" | "positive" | "neutral",
+    "summary": "Brief 1-sentence assessment",
+    "urgency": 1-10,
+    "action_needed": true | false
+}"""
+
+        user_prompt = f"""Analyze this tweet about {institution}:
+
+"{tweet_text}"
+
+Engagement metrics:
+- Retweets: {metrics.get('retweet_count', 0)}
+- Replies: {metrics.get('reply_count', 0)}
+- Likes: {metrics.get('like_count', 0)}
+- Quotes: {metrics.get('quote_count', 0)}
+- Total engagement: {total_engagement}
+
+Assess the risk level considering both content and virality potential."""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.1,
+                max_tokens=200,
+                response_format={"type": "json_object"}
+            )
+
+            result = json.loads(response.choices[0].message.content)
+            result["institution"] = institution
+            result["engagement"] = total_engagement
+            result["analyzed_at"] = datetime.now(timezone.utc).isoformat()
+            return result
+
+        except Exception as e:
+            return {
+                "risk_level": "UNKNOWN",
+                "risk_type": "error",
+                "summary": f"Analysis failed: {str(e)}",
+                "urgency": 0,
+                "action_needed": False,
+                "error": str(e)
+            }
+
     def _format_tweets_for_analysis(self, tweets: List[Dict], max_tweets: int = 40) -> str:
         """Format tweets with full context for Grok analysis."""
         sorted_tweets = sorted(

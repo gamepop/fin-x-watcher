@@ -13,8 +13,12 @@ REAL-TIME RESPONSIVENESS FEATURES:
 import os
 import json
 import asyncio
-from typing import List, Optional, AsyncGenerator
+import hashlib
+import hmac
+import base64
+from typing import List, Optional, AsyncGenerator, Dict, Any
 from datetime import datetime, timezone
+from collections import deque
 from dotenv import load_dotenv
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
@@ -63,6 +67,240 @@ class StreamEvent(BaseModel):
     event: str
     data: dict
     timestamp: str
+
+
+class WebhookRule(BaseModel):
+    """Rule for webhook filtering."""
+    institution: str
+    keywords: List[str] = []
+    min_engagement: int = 0
+
+
+class WebhookConfig(BaseModel):
+    """Configuration for webhook setup."""
+    rules: List[WebhookRule]
+    callback_url: Optional[str] = None
+
+
+# =============================================================================
+# X API Webhook Manager
+# =============================================================================
+
+class WebhookEventStore:
+    """
+    Store for webhook events with SSE broadcasting.
+
+    Maintains a buffer of recent events and allows multiple SSE clients
+    to subscribe for real-time updates.
+    """
+
+    def __init__(self, max_events: int = 1000):
+        self.events: deque = deque(maxlen=max_events)
+        self.subscribers: List[asyncio.Queue] = []
+        self._lock = asyncio.Lock()
+
+    async def add_event(self, event: Dict[str, Any]):
+        """Add event and broadcast to all subscribers."""
+        async with self._lock:
+            event["received_at"] = datetime.now(timezone.utc).isoformat()
+            self.events.append(event)
+
+            # Broadcast to all SSE subscribers
+            for queue in self.subscribers:
+                try:
+                    await queue.put(event)
+                except:
+                    pass
+
+    async def subscribe(self) -> asyncio.Queue:
+        """Subscribe to real-time events."""
+        queue = asyncio.Queue()
+        async with self._lock:
+            self.subscribers.append(queue)
+        return queue
+
+    async def unsubscribe(self, queue: asyncio.Queue):
+        """Unsubscribe from events."""
+        async with self._lock:
+            if queue in self.subscribers:
+                self.subscribers.remove(queue)
+
+    def get_recent_events(self, limit: int = 50) -> List[Dict]:
+        """Get recent events."""
+        return list(self.events)[-limit:]
+
+
+class XWebhookManager:
+    """
+    Manager for X API v2 webhooks.
+
+    Handles:
+    - CRC validation for X webhook verification
+    - Event processing and Grok analysis
+    - Rule-based filtering
+    - Real-time event broadcasting
+    """
+
+    def __init__(self):
+        self.consumer_secret = os.getenv("X_CONSUMER_SECRET", "")
+        self.webhook_id: Optional[str] = None
+        self.active_rules: Dict[str, WebhookRule] = {}
+        self.event_store = WebhookEventStore()
+        self.grok_client = None
+        self._initialized = False
+
+    def _initialize_clients(self):
+        """Lazy initialization of clients."""
+        if not self._initialized:
+            try:
+                from tools import GrokClient
+                self.grok_client = GrokClient()
+            except:
+                pass
+            self._initialized = True
+
+    def generate_crc_response(self, crc_token: str) -> str:
+        """
+        Generate CRC response for X webhook verification.
+
+        X sends a CRC token, we respond with HMAC-SHA256 hash
+        using our consumer secret as the key.
+
+        Args:
+            crc_token: Challenge token from X
+
+        Returns:
+            Base64-encoded HMAC-SHA256 hash
+        """
+        if not self.consumer_secret:
+            raise ValueError("X_CONSUMER_SECRET not configured")
+
+        # Create HMAC-SHA256 hash
+        hmac_digest = hmac.new(
+            self.consumer_secret.encode('utf-8'),
+            crc_token.encode('utf-8'),
+            hashlib.sha256
+        ).digest()
+
+        # Base64 encode
+        return base64.b64encode(hmac_digest).decode('utf-8')
+
+    def add_rule(self, rule: WebhookRule):
+        """Add a filtering rule."""
+        self.active_rules[rule.institution] = rule
+
+    def remove_rule(self, institution: str):
+        """Remove a filtering rule."""
+        if institution in self.active_rules:
+            del self.active_rules[institution]
+
+    def matches_rules(self, tweet_data: Dict) -> Optional[str]:
+        """
+        Check if tweet matches any active rules.
+
+        Returns institution name if matched, None otherwise.
+        """
+        text = tweet_data.get("text", "").lower()
+
+        for institution, rule in self.active_rules.items():
+            # Check institution name
+            if institution.lower() in text:
+                return institution
+
+            # Check additional keywords
+            for keyword in rule.keywords:
+                if keyword.lower() in text:
+                    return institution
+
+        return None
+
+    async def process_webhook_event(self, payload: Dict) -> Dict[str, Any]:
+        """
+        Process incoming webhook event.
+
+        1. Parse tweet data
+        2. Match against rules
+        3. If matched, trigger Grok analysis
+        4. Store and broadcast event
+        """
+        self._initialize_clients()
+
+        result = {
+            "processed": False,
+            "matched_institution": None,
+            "analysis": None,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+        # Handle different event types
+        if "tweet_create_events" in payload:
+            # Account Activity API format
+            tweets = payload["tweet_create_events"]
+        elif "data" in payload:
+            # Filtered Stream format
+            tweets = [payload["data"]]
+        elif "text" in payload:
+            # Direct tweet format
+            tweets = [payload]
+        else:
+            # Unknown format, store raw
+            await self.event_store.add_event({
+                "type": "unknown",
+                "payload": payload
+            })
+            return result
+
+        for tweet in tweets:
+            matched_institution = self.matches_rules(tweet)
+
+            if matched_institution:
+                result["matched_institution"] = matched_institution
+                result["processed"] = True
+
+                # Build event for broadcasting
+                event = {
+                    "type": "webhook_tweet",
+                    "institution": matched_institution,
+                    "tweet": {
+                        "id": tweet.get("id"),
+                        "text": tweet.get("text"),
+                        "author_id": tweet.get("author_id"),
+                        "created_at": tweet.get("created_at"),
+                        "public_metrics": tweet.get("public_metrics", {})
+                    },
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+
+                # Check for high-engagement tweets that need immediate analysis
+                metrics = tweet.get("public_metrics", {})
+                total_engagement = (
+                    metrics.get("retweet_count", 0) +
+                    metrics.get("reply_count", 0) +
+                    metrics.get("like_count", 0) +
+                    metrics.get("quote_count", 0)
+                )
+
+                # Trigger Grok analysis for high-engagement or rule-matched tweets
+                if self.grok_client and total_engagement >= 10:
+                    try:
+                        analysis = self.grok_client.analyze_single_tweet(
+                            matched_institution,
+                            tweet.get("text", ""),
+                            metrics
+                        )
+                        event["grok_analysis"] = analysis
+                        result["analysis"] = analysis
+                    except Exception as e:
+                        event["analysis_error"] = str(e)
+
+                # Store and broadcast
+                await self.event_store.add_event(event)
+
+        return result
+
+
+# Global webhook manager instance
+_webhook_manager = XWebhookManager()
 
 
 # =============================================================================
@@ -226,16 +464,22 @@ async def health_check():
     return {
         "status": "healthy",
         "agent": "FinancialSentinel",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "features": {
             "multi_endpoint_x_api": True,
             "circuit_breaker": True,
             "viral_scoring": True,
             "trend_detection": True,
-            "sse_streaming": True
+            "sse_streaming": True,
+            "webhooks": True
         },
-        "x_api_health": api_health
+        "x_api_health": api_health,
+        "webhook_status": {
+            "active_rules": len(_webhook_manager.active_rules),
+            "buffered_events": len(_webhook_manager.event_store.events),
+            "subscribers": len(_webhook_manager.event_store.subscribers)
+        }
     }
 
 
@@ -744,6 +988,226 @@ async def analyze_buffered_events():
 
 
 # =============================================================================
+# X API Webhook Endpoints (Real-time Push Notifications)
+# =============================================================================
+
+@app.get("/webhooks/x")
+async def webhook_crc_validation(crc_token: str):
+    """
+    CRC validation endpoint for X webhook verification.
+
+    X calls this endpoint with a crc_token to verify we own the webhook.
+    We respond with an HMAC-SHA256 hash using our consumer secret.
+
+    This is required by X API for webhook registration.
+
+    Query params:
+        crc_token: Challenge token from X
+
+    Returns:
+        response_token: HMAC-SHA256 hash for verification
+    """
+    try:
+        response_token = _webhook_manager.generate_crc_response(crc_token)
+        return {"response_token": f"sha256={response_token}"}
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/webhooks/x")
+async def webhook_event_handler(payload: Dict[str, Any], background_tasks: BackgroundTasks):
+    """
+    Webhook event handler for X API push notifications.
+
+    Receives real-time tweet events from X when they match configured rules.
+    Events are processed, analyzed by Grok if high-engagement, and broadcast
+    to connected SSE clients.
+
+    Request body:
+        X API webhook payload (varies by event type)
+
+    Returns:
+        Processing status
+    """
+    # Process in background to return quickly (X requires fast response)
+    result = await _webhook_manager.process_webhook_event(payload)
+
+    return {
+        "status": "received",
+        "processed": result["processed"],
+        "matched_institution": result.get("matched_institution"),
+        "timestamp": result["timestamp"]
+    }
+
+
+@app.get("/webhooks/x/stream")
+async def webhook_events_stream():
+    """
+    SSE stream for real-time webhook events.
+
+    Subscribe to this endpoint to receive live updates when X sends
+    webhook events matching your configured rules.
+
+    Usage:
+    ```javascript
+    const eventSource = new EventSource('/webhooks/x/stream');
+
+    eventSource.addEventListener('webhook_tweet', (e) => {
+        const data = JSON.parse(e.data);
+        console.log(`New tweet about ${data.institution}: ${data.tweet.text}`);
+
+        if (data.grok_analysis) {
+            console.log('Risk level:', data.grok_analysis.risk_level);
+        }
+    });
+    ```
+    """
+    queue = await _webhook_manager.event_store.subscribe()
+
+    async def event_generator():
+        try:
+            # Send initial connection event
+            yield f"event: connected\ndata: {json.dumps({'message': 'Connected to webhook stream', 'timestamp': datetime.now(timezone.utc).isoformat()})}\n\n"
+
+            while True:
+                try:
+                    # Wait for events with timeout
+                    event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    event_type = event.get("type", "message")
+                    yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    # Send keepalive
+                    yield f"event: keepalive\ndata: {json.dumps({'timestamp': datetime.now(timezone.utc).isoformat()})}\n\n"
+        finally:
+            await _webhook_manager.event_store.unsubscribe(queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+@app.post("/webhooks/x/rules")
+async def add_webhook_rule(rule: WebhookRule):
+    """
+    Add a filtering rule for webhook events.
+
+    When X sends a webhook event, it will be checked against all active
+    rules. Matching events trigger Grok analysis and broadcast.
+
+    Request body:
+        institution: Institution name to match
+        keywords: Additional keywords to match
+        min_engagement: Minimum engagement for analysis (default: 0)
+
+    Returns:
+        Confirmation of rule addition
+    """
+    _webhook_manager.add_rule(rule)
+    return {
+        "status": "added",
+        "rule": {
+            "institution": rule.institution,
+            "keywords": rule.keywords,
+            "min_engagement": rule.min_engagement
+        },
+        "total_rules": len(_webhook_manager.active_rules),
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+
+@app.delete("/webhooks/x/rules/{institution}")
+async def remove_webhook_rule(institution: str):
+    """
+    Remove a filtering rule.
+
+    Args:
+        institution: Institution name whose rule to remove
+
+    Returns:
+        Confirmation of rule removal
+    """
+    _webhook_manager.remove_rule(institution)
+    return {
+        "status": "removed",
+        "institution": institution,
+        "remaining_rules": len(_webhook_manager.active_rules),
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+
+@app.get("/webhooks/x/rules")
+async def list_webhook_rules():
+    """
+    List all active webhook filtering rules.
+
+    Returns:
+        List of active rules
+    """
+    rules = []
+    for institution, rule in _webhook_manager.active_rules.items():
+        rules.append({
+            "institution": institution,
+            "keywords": rule.keywords,
+            "min_engagement": rule.min_engagement
+        })
+
+    return {
+        "rules": rules,
+        "total": len(rules),
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+
+@app.get("/webhooks/x/events")
+async def get_recent_webhook_events(limit: int = 50):
+    """
+    Get recent webhook events from the buffer.
+
+    Query params:
+        limit: Max events to return (default: 50)
+
+    Returns:
+        Recent webhook events
+    """
+    events = _webhook_manager.event_store.get_recent_events(limit)
+    return {
+        "events": events,
+        "count": len(events),
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+
+@app.get("/webhooks/x/status")
+async def webhook_status():
+    """
+    Get webhook system status.
+
+    Returns:
+        Webhook configuration and health status
+    """
+    return {
+        "status": "active",
+        "consumer_secret_configured": bool(_webhook_manager.consumer_secret),
+        "active_rules": len(_webhook_manager.active_rules),
+        "buffered_events": len(_webhook_manager.event_store.events),
+        "active_subscribers": len(_webhook_manager.event_store.subscribers),
+        "endpoints": {
+            "crc_validation": "GET /webhooks/x?crc_token=...",
+            "event_handler": "POST /webhooks/x",
+            "event_stream": "GET /webhooks/x/stream",
+            "rules_management": "/webhooks/x/rules"
+        },
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+
+# =============================================================================
 # Session Continuation Endpoints (Responses API)
 # =============================================================================
 
@@ -811,15 +1275,20 @@ async def get_institution_type_context(name: str):
 if __name__ == "__main__":
     import uvicorn
     print("=" * 60)
-    print("Financial Sentinel AG-UI Server v2.0")
+    print("Financial Sentinel AG-UI Server v2.1")
     print("=" * 60)
     print("Features:")
     print("  - Multi-endpoint X API integration")
     print("  - SSE streaming for real-time updates")
     print("  - Circuit breaker for resilience")
     print("  - Viral scoring & trend detection")
+    print("  - X API Webhooks for real-time push alerts")
     print("=" * 60)
-    print("Endpoint: http://localhost:8000")
-    print("SSE Stream: http://localhost:8000/stream/analyze/{institution}")
+    print("Endpoints:")
+    print("  AG-UI:     http://localhost:8000/")
+    print("  Health:    http://localhost:8000/health")
+    print("  SSE:       http://localhost:8000/stream/analyze/{institution}")
+    print("  Webhooks:  http://localhost:8000/webhooks/x")
+    print("  Events:    http://localhost:8000/webhooks/x/stream")
     print("=" * 60)
     uvicorn.run(app, host="0.0.0.0", port=8000)
