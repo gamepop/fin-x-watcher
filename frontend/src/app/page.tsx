@@ -24,7 +24,7 @@ import LiveStreamFeed from "@/components/stream/LiveStreamFeed";
 // Institution categories with icons
 const INSTITUTIONS = {
   "Traditional Banks": [
-    "Chase", "Bank of America", "Wells Fargo", "Citibank", "Capital One", "US Bank", "PNC Bank"
+    "Elon Musk", "Chase", "Bank of America", "Wells Fargo", "Citibank", "Capital One", "US Bank", "PNC Bank"
   ],
   "Crypto Exchanges": [
     "Coinbase", "Binance", "Kraken", "Gemini", "Crypto.com", "KuCoin", "Bitfinex"
@@ -277,6 +277,7 @@ export default function Home() {
   const [liveStreamError, setLiveStreamError] = useState<string | null>(null);
   const liveStreamRef = useRef<EventSource | null>(null);
   const [showLivePanel, setShowLivePanel] = useState(true);
+  const [usePolling, setUsePolling] = useState(true); // toggle between polling and filtered stream
   const pollingInFlightRef = useRef<boolean>(false);
 
   // Toast notifications
@@ -284,6 +285,10 @@ export default function Home() {
 
   // Time range for charts
   const [timeRange, setTimeRange] = useState<TimeRange>("24h");
+
+  // Analysis settings
+  const [hoursBack, setHoursBack] = useState(24); // Lookback window for analysis
+  const [analysisMode, setAnalysisMode] = useState<any>(null); // Mode info from backend
 
   // Phase 3: Enhanced Sidebar state
   const [searchQuery, setSearchQuery] = useState("");
@@ -298,6 +303,8 @@ export default function Home() {
   
   // Side panel state
   const [showSidePanel, setShowSidePanel] = useState(false);
+  const chatRef = useRef<any>(null);
+  const sidePanelContentRef = useRef<HTMLDivElement | null>(null);
 
   // Calculate dashboard stats
   const dashboardStats = useMemo(() => {
@@ -637,7 +644,7 @@ export default function Home() {
     [selectedInstitutions]
   );
 
-  // Sync stream rules with portfolio and start live stream (polling-only mode)
+  // Sync stream rules with portfolio and start live stream (prefer filtered stream; fallback to polling)
   const startLiveStream = useCallback(async () => {
     if (selectedInstitutions.length === 0) {
       setLiveStreamError("Please select at least one institution to monitor");
@@ -645,18 +652,109 @@ export default function Home() {
     }
 
     setLiveStreamError(null);
-    setLiveStreamActive(false);
-    setIsMonitoring(true);
-    setLiveStreamEvents(prev => [
-      {
-        id: `poll-start-${Date.now()}`,
-        type: 'connected',
-        timestamp: new Date(),
-        summary: `Polling ${selectedInstitutions.length} institutions...`
-      } as LiveStreamEvent,
-      ...prev
-    ].slice(0, 100));
-    await pollTweets();
+    setLiveStreamActive(true);
+    setShowLivePanel(true);
+    setIsMonitoring(true); // ensure scheduled Quick Analysis continues during streaming
+
+    // Attempt filtered stream (SSE). If it fails, fall back to polling.
+    try {
+      await fetch("http://localhost:8000/monitor/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ institutions: selectedInstitutions }),
+      });
+
+      setUsePolling(false);
+      const es = new EventSource("http://localhost:8000/monitor/stream");
+      liveStreamRef.current = es;
+
+      es.addEventListener("connected", () => {
+        setLiveStreamEvents(prev => [{
+          id: `connected-${Date.now()}`,
+          type: 'connected',
+          timestamp: new Date(),
+          summary: "Connected to filtered stream"
+        } as LiveStreamEvent, ...prev].slice(0, 200));
+      });
+
+      es.addEventListener("tweet", (event: any) => {
+        try {
+          const data = JSON.parse(event.data);
+          const item: LiveStreamEvent = {
+            id: data.id || `tweet-${Date.now()}`,
+            type: 'tweet',
+            institution: data.institution,
+            text: data.text,
+            author: data.author,
+            author_name: data.author_name,
+            author_verified: data.author_verified,
+            author_followers: data.author_followers,
+            engagement: data.engagement || { retweets: 0, likes: 0, replies: 0 },
+            tweet_id: data.id,
+            url: data.url,
+            timestamp: data.timestamp ? new Date(data.timestamp) : new Date(),
+            matched_rules: data.matched_rules || [],
+          };
+          setLiveStreamEvents(prev => [item, ...prev].slice(0, 200));
+        } catch (e) {
+          console.error("Failed to parse tweet event", e);
+        }
+      });
+
+      es.addEventListener("alert", (event: any) => {
+        try {
+          const data = JSON.parse(event.data);
+          const item: LiveStreamEvent = {
+            id: data.id || `alert-${Date.now()}`,
+            type: 'analysis', // reuse analysis type for alerts to fit union
+            institution: data.institution,
+            summary: data.summary,
+            risk_level: data.risk_level,
+            timestamp: data.timestamp ? new Date(data.timestamp) : new Date(),
+          };
+          setLiveStreamEvents(prev => [item, ...prev].slice(0, 200));
+        } catch (e) {
+          console.error("Failed to parse alert event", e);
+        }
+      });
+
+      es.addEventListener("heartbeat", () => {
+        setLiveStreamStats((prev: any) => ({
+          ...(prev || {}),
+          last_heartbeat: new Date(),
+        }));
+      });
+
+      es.addEventListener("error", (event: any) => {
+        const data = event?.data ? JSON.parse(event.data) : { error: "Stream error" };
+        setLiveStreamError(data.error || "Stream error");
+      });
+
+      es.onerror = () => {
+        setLiveStreamError("Stream connection lost. Falling back to polling.");
+        setUsePolling(true);
+        setLiveStreamActive(true);
+        setLiveStreamEvents((prev: LiveStreamEvent[]) => [{
+          id: `fallback-${Date.now()}`,
+          type: 'error',
+          timestamp: new Date(),
+          summary: "Stream lost; switched to polling."
+        } as LiveStreamEvent, ...prev].slice(0, 200));
+        pollTweets();
+      };
+    } catch (e) {
+      setUsePolling(true);
+      setLiveStreamEvents(prev => [
+        {
+          id: `poll-start-${Date.now()}`,
+          type: 'connected',
+          timestamp: new Date(),
+          summary: `Polling ${selectedInstitutions.length} institutions...`
+        } as LiveStreamEvent,
+        ...prev
+      ].slice(0, 100));
+      await pollTweets();
+    }
   }, [selectedInstitutions, pollTweets]);
 
   // Stop live stream
@@ -667,12 +765,13 @@ export default function Home() {
     }
     setLiveStreamActive(false);
     setIsMonitoring(false);
-    setLiveStreamEvents(prev => [...prev, {
+    setUsePolling(false);
+    setLiveStreamEvents((prev: LiveStreamEvent[]) => [...prev, {
       id: `disconnected-${Date.now()}`,
       type: 'error',
       timestamp: new Date(),
       summary: "Stream disconnected"
-    }]);
+    } as LiveStreamEvent]);
   }, []);
 
   // Cleanup on unmount
@@ -686,11 +785,11 @@ export default function Home() {
 
   // Polling interval when monitoring is enabled (fallback mode)
   useEffect(() => {
-    if (!isMonitoring) return;
+    if (!isMonitoring || !usePolling) return;
     pollTweets();
     const interval = setInterval(pollTweets, Math.max(monitoringInterval, 1) * 60 * 1000);
     return () => clearInterval(interval);
-  }, [isMonitoring, monitoringInterval, pollTweets]);
+  }, [isMonitoring, usePolling, monitoringInterval, pollTweets]);
 
   // Fetch live stream stats periodically
   useEffect(() => {
@@ -767,6 +866,50 @@ export default function Home() {
     return `Analyze these financial institutions for risk: ${selectedInstitutions.join(", ")}. For each one, fetch market sentiment and send alerts for any HIGH or MEDIUM risk findings.`;
   };
 
+  const sendSuggestionPrompt = useCallback(async () => {
+    const prompt = getMonitoringPrompt();
+    if (!prompt) {
+      toast.error("Select at least one institution to generate a prompt");
+      return;
+    }
+
+    const tryDomSend = () => {
+      const root = sidePanelContentRef.current;
+      if (!root) return false;
+      const textarea = root.querySelector("textarea") as HTMLTextAreaElement | null;
+      const submitBtn =
+        (root.querySelector('button[aria-label="Send message"]') as HTMLButtonElement | null) ||
+        (root.querySelector('button[type="submit"]') as HTMLButtonElement | null) ||
+        (root.querySelector('button[aria-label="Send"]') as HTMLButtonElement | null) ||
+        (root.querySelector('button[title="Send"]') as HTMLButtonElement | null) ||
+        (root.querySelector('button svg')?.closest("button") as HTMLButtonElement | null);
+
+      if (textarea) {
+        textarea.value = prompt;
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        if (submitBtn) {
+          submitBtn.click();
+          return true;
+        }
+        textarea.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Enter",
+            code: "Enter",
+            bubbles: true,
+          })
+        );
+        return true;
+      }
+      return false;
+    };
+
+    if (tryDomSend()) {
+      toast.success("Prompt sent to chat");
+    } else {
+      toast.error("Could not send prompt. Please type it manually.");
+    }
+  }, [getMonitoringPrompt, toast]);
+
   const handleQuickAnalysis = useCallback(async () => {
     if (selectedInstitutions.length === 0) return;
     // Allow a new batch even if a prior stream flag was set
@@ -775,6 +918,17 @@ export default function Home() {
       await streamAnalysis(inst);
     }
   }, [selectedInstitutions, streamAnalysis]);
+
+  // Run full quick analysis on a schedule while monitoring (mirrors Quick Analysis behavior)
+  useEffect(() => {
+    if (!isMonitoring || selectedInstitutions.length === 0) return;
+    const run = () => handleQuickAnalysis();
+    run();
+    const interval = setInterval(run, Math.max(monitoringInterval, 1) * 60 * 1000);
+    return () => clearInterval(interval);
+    // We intentionally omit handleQuickAnalysis to avoid effect churn; it is stable enough for interval callbacks.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMonitoring, monitoringInterval, selectedInstitutions.length]);
 
   return (
     <div className="relative">
@@ -932,37 +1086,95 @@ export default function Home() {
             )}
           </div>
 
-          {/* Quick Actions */}
+          {/* Analysis Settings (from main) */}
+          <div className="mt-6 pt-4 border-t border-slate-700">
+            <h3 className="text-sm font-medium text-white mb-3">Analysis Settings</h3>
+
+            {/* Time Period Selector */}
+            <div className="mb-3">
+              <label className="text-sm text-slate-400 block mb-1">Look back</label>
+              <select
+                value={hoursBack}
+                onChange={(e) => setHoursBack(Number(e.target.value))}
+                className="w-full bg-slate-700 text-white text-sm rounded px-3 py-2 border border-slate-600"
+              >
+                <option value={1}>Last 1 hour</option>
+                <option value={6}>Last 6 hours</option>
+                <option value={12}>Last 12 hours</option>
+                <option value={24}>Last 24 hours (default)</option>
+                <option value={48}>Last 2 days</option>
+                <option value={72}>Last 3 days</option>
+                <option value={168}>Last 7 days (max)</option>
+              </select>
+            </div>
+
+            {/* Analysis Mode Indicator */}
+          {selectedInstitutions.length > 0 && (
+              <div className="mb-3">
+              <button
+                  onClick={async () => {
+                    try {
+                      const res = await fetch(`http://localhost:8000/analyze/mode/${selectedInstitutions[0]}`);
+                      const data = await res.json();
+                      setAnalysisMode(data);
+                    } catch (e) {
+                      console.error('Failed to fetch mode:', e);
+                    }
+                  }}
+                  className="w-full bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs py-2 px-3 rounded transition-colors text-left"
+                >
+                  Check Analysis Mode
+                </button>
+
+                {analysisMode && (
+                  <div className={`mt-2 p-2 rounded text-xs ${
+                    analysisMode.mode === 'stateful'
+                      ? 'bg-green-900/30 border border-green-700/50'
+                      : 'bg-blue-900/30 border border-blue-700/50'
+                  }`}>
+                    <div className="font-medium text-white mb-1">
+                      Mode: {analysisMode.mode === 'stateful' ? '✓ Stateful (Responses API)' : '○ Direct (X API)'}
+                    </div>
+                    {analysisMode.session_active && (
+                      <div className="text-green-300 text-[10px]">
+                        Session Active • Delta updates available
+                      </div>
+                    )}
+                    {!analysisMode.session_active && analysisMode.mode === 'stateful' && (
+                      <div className="text-yellow-300 text-[10px]">
+                        No session yet • Run analysis to start
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Quick Actions (UI from main, Quick Analysis logic retained) */}
           {selectedInstitutions.length > 0 && (
             <div className="mt-4 space-y-2">
               {/* Live Stream Button - Primary Action */}
               <button
-                onClick={() => liveStreamActive || isMonitoring ? stopLiveStream() : startLiveStream()}
-                className={`w-full ${(liveStreamActive || isMonitoring)
+                onClick={() => liveStreamActive ? stopLiveStream() : startLiveStream()}
+                className={`w-full ${liveStreamActive
                   ? 'bg-red-600 hover:bg-red-700'
                   : 'bg-emerald-600 hover:bg-emerald-700'} text-white text-sm py-2.5 px-4 rounded-lg transition-colors flex items-center justify-center gap-2 font-medium`}
               >
-                {(liveStreamActive || isMonitoring) ? (
+                {liveStreamActive ? (
                   <>
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
                     </svg>
-                    Stop Monitoring
+                    Stop Live Stream
                   </>
                 ) : (
                   <>
                     <span className="w-3 h-3 rounded-full bg-white animate-pulse"></span>
-                    Start Monitoring (Polling)
+                    Start Live Stream
                   </>
                 )}
-              </button>
-
-              <button
-                onClick={() => pollTweets()}
-                className="w-full bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm py-2 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
-              >
-                Poll Now
               </button>
 
               <button
@@ -981,25 +1193,65 @@ export default function Home() {
                   </>
                 )}
               </button>
+
+              {/* Continue Analysis - Delta Updates */}
+              {analysisMode?.session_active && (
               <button
-                onClick={() => {
-                  const prompt = getMonitoringPrompt();
-                  navigator.clipboard.writeText(prompt);
-                }}
-                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white text-sm py-2 px-4 rounded-lg transition-colors"
-              >
-                Copy Analysis Prompt
+                  onClick={async () => {
+                    if (selectedInstitutions.length === 0 || isStreaming) return;
+
+                    setIsStreaming(true);
+                    setStreamingInstitution(selectedInstitutions[0]);
+                    setStreamStatus('Fetching delta updates...');
+
+                    try {
+                      const res = await fetch('http://localhost:8000/analyze/continue', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          institution: selectedInstitutions[0],
+                          follow_up: `Any new developments in the last ${hoursBack} hours?`
+                        })
+                      });
+
+                      const data = await res.json();
+                      setStreamStatus('Delta analysis complete');
+
+                      // Add result to streaming results
+                      setStreamingResults(prev => [
+                        ...prev,
+                        {
+                          id: `delta-${Date.now()}`,
+                          institution: selectedInstitutions[0],
+                          analysis: data.analysis,
+                          timestamp: new Date()
+                        }
+                      ]);
+                    } catch (error) {
+                      setStreamStatus(`Error: ${error}`);
+                    } finally {
+                      setIsStreaming(false);
+                      setStreamingInstitution(null);
+                    }
+                  }}
+                  disabled={isStreaming}
+                  className={`w-full ${isStreaming ? 'bg-slate-600 cursor-not-allowed' : 'bg-purple-600 hover:bg-purple-700'} text-white text-sm py-2 px-4 rounded-lg transition-colors flex items-center justify-center gap-2`}
+                >
+                  {isStreaming ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                      Getting updates...
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                      Continue Analysis (Delta)
+                    </>
+                  )}
               </button>
-              <button
-                onClick={() => {
-                  setSelectedInstitutions([]);
-                  setLiveResults({});
-                  setLiveStreamEvents([]);
-                }}
-                className="w-full bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm py-2 px-4 rounded-lg transition-colors"
-              >
-                Clear Selection
-              </button>
+              )}
             </div>
           )}
         </div>
@@ -1090,18 +1342,6 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Feature badges */}
-          <div className="flex gap-2 mt-3 flex-wrap">
-            <span className="text-xs bg-slate-700 text-slate-300 px-2 py-1 rounded">/tweets/search/recent</span>
-            <span className="text-xs bg-slate-700 text-slate-300 px-2 py-1 rounded">/tweets/counts/recent</span>
-            <span className="text-xs bg-slate-700 text-slate-300 px-2 py-1 rounded">/users/by</span>
-            <span className={`text-xs px-2 py-1 rounded ${liveStreamActive ? 'bg-emerald-600 text-white animate-pulse' : 'bg-emerald-700 text-white'}`}>
-              Filtered Stream {liveStreamActive && '●'}
-            </span>
-            <span className="text-xs bg-purple-700 text-white px-2 py-1 rounded">Viral Scoring</span>
-            <span className="text-xs bg-blue-700 text-white px-2 py-1 rounded">SSE Streaming</span>
-            <span className="text-xs bg-green-700 text-white px-2 py-1 rounded">Circuit Breaker</span>
-          </div>
         </header>
 
         {/* Chat Interface - Results now appear inline in chat */}
@@ -1118,7 +1358,7 @@ export default function Home() {
               {...dashboardStats}
               isLoading={isStreaming && streamingResults.length === 0}
             />
-          </div>
+              </div>
 
           {/* Phase 2: Data Visualization Charts */}
           {streamingResults.length > 0 && (
@@ -1214,23 +1454,26 @@ export default function Home() {
           title="Financial Sentinel"
           showLivePanel={showLivePanel}
         >
-          <CopilotChat
-            className="h-full"
-            labels={{
-              title: "Financial Sentinel",
-              initial: selectedInstitutions.length > 0
-                ? `I'm monitoring ${selectedInstitutions.length} institutions for you: ${selectedInstitutions.slice(0, 3).join(", ")}${selectedInstitutions.length > 3 ? '...' : ''}.\n\n**Features active:**\n- Multi-endpoint X API (/tweets/search, /tweets/counts)\n- Viral risk scoring & trend detection\n- Verified account weighting\n- Full tweet URL traceability\n\nType "analyze all" to check them now, or ask about specific ones.`
-                : "Hi! I'm your Financial Sentinel with **sophisticated X API integration**.\n\n**My capabilities:**\n- Multi-endpoint X API (search + counts + users)\n- Viral risk scoring (engagement-weighted)\n- Trend detection (volume velocity)\n- Circuit breaker (resilient to rate limits)\n- Full traceability (tweet URLs included)\n\nExamples:\n- \"Analyze Chase and Coinbase\"\n- \"Check if Robinhood has any issues\"\n- \"Monitor my crypto: Binance, MetaMask, Phantom\"",
-              placeholder: selectedInstitutions.length > 0
-                ? `Analyze ${selectedInstitutions.length} selected institutions...`
-                : "Ask me to analyze any financial institution...",
-            }}
-            instructions={(() => {
-              const baseInstructions = "You are the Financial Sentinel with SOPHISTICATED X API integration.\n\n";
-              const institutionNote = selectedInstitutions.length > 0
-                ? `The user has selected these institutions to monitor: ${selectedInstitutions.join(", ")}\n\nIf the user says "analyze all", "check all", "monitor all", or similar, analyze ALL of their selected institutions.\n\n`
-                : "";
-              const restInstructions = `## Your X API Integration
+          <div className="relative h-full" ref={sidePanelContentRef}>
+            <CopilotChat
+              // @ts-expect-error CopilotChat ref used for programmatic send
+              ref={chatRef}
+              className="h-full pb-16"
+              labels={{
+                title: "Financial Sentinel",
+                initial: selectedInstitutions.length > 0
+                  ? `I'm monitoring ${selectedInstitutions.length} institutions for you: ${selectedInstitutions.slice(0, 3).join(", ")}${selectedInstitutions.length > 3 ? '...' : ''}.\n\n**Features active:**\n- Multi-endpoint X API (/tweets/search, /tweets/counts)\n- Viral risk scoring & trend detection\n- Verified account weighting\n- Full tweet URL traceability\n\nType "analyze all" to check them now, or ask about specific ones.`
+                  : "Hi! I'm your Financial Sentinel with **sophisticated X API integration**.\n\n**My capabilities:**\n- Multi-endpoint X API (search + counts + users)\n- Viral risk scoring (engagement-weighted)\n- Trend detection (volume velocity)\n- Circuit breaker (resilient to rate limits)\n- Full traceability (tweet URLs included)\n\nExamples:\n- \"Analyze Chase and Coinbase\"\n- \"Check if Robinhood has any issues\"\n- \"Monitor my crypto: Binance, MetaMask, Phantom\"",
+                placeholder: selectedInstitutions.length > 0
+                  ? `Analyze ${selectedInstitutions.length} selected institutions...`
+                  : "Ask me to analyze any financial institution...",
+              }}
+              instructions={(() => {
+                const baseInstructions = "You are the Financial Sentinel with SOPHISTICATED X API integration.\n\n";
+                const institutionNote = selectedInstitutions.length > 0
+                  ? `The user has selected these institutions to monitor: ${selectedInstitutions.join(", ")}\n\nIf the user says "analyze all", "check all", "monitor all", or similar, analyze ALL of their selected institutions.\n\n`
+                  : "";
+                const restInstructions = `## Your X API Integration
 You use MULTIPLE X API ENDPOINTS for comprehensive analysis:
 1. /tweets/search/recent - Fetch tweets with full metadata
 2. /tweets/counts/recent - Detect volume trends and spikes
@@ -1260,9 +1503,20 @@ Include in your response:
 - Evidence tweets from high-credibility sources
 
 Be concise. Cite your data source (X API + Grok) and include tweet URLs for traceability.`;
-              return baseInstructions + institutionNote + restInstructions;
-            })()}
-          />
+                return baseInstructions + institutionNote + restInstructions;
+              })()}
+            />
+            {selectedInstitutions.length > 0 && (
+              <div className="absolute bottom-4 left-4 right-4">
+                <button
+                  onClick={sendSuggestionPrompt}
+                  className="w-full bg-indigo-600 hover:bg-indigo-700 text-white text-sm py-3 px-4 rounded-lg transition-colors shadow-lg shadow-indigo-900/40"
+                >
+                  Analyze {selectedInstitutions.length} selected institution{selectedInstitutions.length > 1 ? "s" : ""}
+                </button>
+              </div>
+            )}
+          </div>
         </SidePanel>
 
         {/* Footer */}
