@@ -508,80 +508,84 @@ class XAPIClient:
                 stream_kwargs['backfill_minutes'] = min(backfill_minutes, 5)
 
             for post_response in self.client.stream.posts(**stream_kwargs):
-                data = post_response.model_dump() if hasattr(post_response, 'model_dump') else dict(post_response)
+                try:
+                    data = post_response.model_dump() if hasattr(post_response, 'model_dump') else dict(post_response)
 
-                if data.get('data'):
-                    tweet = data['data']
+                    if data.get('data'):
+                        tweet = data['data']
 
-                    # Extract public metrics
-                    metrics = tweet.get('public_metrics', {})
-                    total_engagement = (
-                        metrics.get('retweet_count', 0) +
-                        metrics.get('reply_count', 0) +
-                        metrics.get('like_count', 0) +
-                        metrics.get('quote_count', 0)
-                    )
-
-                    # Find author in includes
-                    author = None
-                    if data.get('includes', {}).get('users'):
-                        author_id = tweet.get('author_id')
-                        for user in data['includes']['users']:
-                            if user.get('id') == author_id:
-                                author = user
-                                break
-
-                    # Extract entities
-                    entities = tweet.get('entities', {})
-                    hashtags = [h.get('tag') for h in entities.get('hashtags', [])]
-                    mentions = [m.get('username') for m in entities.get('mentions', [])]
-
-                    # Build enriched response
-                    enriched = {
-                        "id": tweet.get('id'),
-                        "text": tweet.get('text'),
-                        "created_at": tweet.get('created_at'),
-                        "author_id": tweet.get('author_id'),
-                        "lang": tweet.get('lang'),
-                        "possibly_sensitive": tweet.get('possibly_sensitive', False),
-                        "matching_rules": data.get('matching_rules', []),
-                        # Engagement metrics
-                        "metrics": {
-                            "retweets": metrics.get('retweet_count', 0),
-                            "replies": metrics.get('reply_count', 0),
-                            "likes": metrics.get('like_count', 0),
-                            "quotes": metrics.get('quote_count', 0),
-                            "total_engagement": total_engagement
-                        },
-                        # Entities
-                        "hashtags": hashtags,
-                        "mentions": mentions,
-                    }
-
-                    # Add author data if available
-                    if author:
-                        author_metrics = author.get('public_metrics', {})
-                        enriched["author"] = {
-                            "id": author.get('id'),
-                            "username": author.get('username'),
-                            "name": author.get('name'),
-                            "verified": author.get('verified', False),
-                            "verified_type": author.get('verified_type'),
-                            "followers": author_metrics.get('followers_count', 0),
-                            "following": author_metrics.get('following_count', 0),
-                        }
-                        # Calculate credibility score
-                        enriched["author"]["credibility_score"] = self._calculate_credibility(
-                            author_metrics.get('followers_count', 0),
-                            author.get('verified', False),
-                            author.get('verified_type')
+                        # Extract public metrics
+                        metrics = tweet.get('public_metrics', {})
+                        total_engagement = (
+                            metrics.get('retweet_count', 0) +
+                            metrics.get('reply_count', 0) +
+                            metrics.get('like_count', 0) +
+                            metrics.get('quote_count', 0)
                         )
 
-                    # Build tweet URL
-                    if enriched.get("author", {}).get("username"):
-                        enriched["url"] = f"https://x.com/{enriched['author']['username']}/status/{tweet.get('id')}"
+                        # Find author in includes
+                        author = None
+                        if data.get('includes', {}).get('users'):
+                            author_id = tweet.get('author_id')
+                            for user in data['includes']['users']:
+                                if user.get('id') == author_id:
+                                    author = user
+                                    break
 
-                    yield enriched
+                        # Extract entities
+                        entities = tweet.get('entities', {})
+                        hashtags = [h.get('tag') for h in entities.get('hashtags', [])]
+                        mentions = [m.get('username') for m in entities.get('mentions', [])]
+
+                        # Build enriched response
+                        enriched = {
+                            "id": tweet.get('id'),
+                            "text": tweet.get('text'),
+                            "created_at": tweet.get('created_at'),
+                            "author_id": tweet.get('author_id'),
+                            "lang": tweet.get('lang'),
+                            "possibly_sensitive": tweet.get('possibly_sensitive', False),
+                            "matching_rules": data.get('matching_rules', []),
+                            # Engagement metrics
+                            "metrics": {
+                                "retweets": metrics.get('retweet_count', 0),
+                                "replies": metrics.get('reply_count', 0),
+                                "likes": metrics.get('like_count', 0),
+                                "quotes": metrics.get('quote_count', 0),
+                                "total_engagement": total_engagement
+                            },
+                            # Entities
+                            "hashtags": hashtags,
+                            "mentions": mentions,
+                        }
+
+                        # Add author data if available
+                        if author:
+                            author_metrics = author.get('public_metrics', {})
+                            enriched["author"] = {
+                                "id": author.get('id'),
+                                "username": author.get('username'),
+                                "name": author.get('name'),
+                                "verified": author.get('verified', False),
+                                "verified_type": author.get('verified_type'),
+                                "followers": author_metrics.get('followers_count', 0),
+                                "following": author_metrics.get('following_count', 0),
+                            }
+                            # Calculate credibility score
+                            enriched["author"]["credibility_score"] = self._calculate_credibility(
+                                author_metrics.get('followers_count', 0),
+                                author.get('verified', False),
+                                author.get('verified_type')
+                            )
+
+                        # Build tweet URL
+                        if enriched.get("author", {}).get("username"):
+                            enriched["url"] = f"https://x.com/{enriched['author']['username']}/status/{tweet.get('id')}"
+
+                        yield enriched
+                except UnicodeDecodeError:
+                    # Skip malformed UTF-8 chunks in the stream to avoid aborting the worker
+                    continue
 
         except Exception as e:
             yield {"error": str(e), "type": "stream_error"}
