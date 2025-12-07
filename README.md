@@ -4,6 +4,7 @@
 
 ---
 
+
 ## Overview
 
 Financial Sentinel monitors banks, crypto exchanges, trading platforms, and payment apps in real-time by analyzing social media signals from X (Twitter). It uses the official X Python SDK (xdk) for comprehensive data collection and Grok AI for intelligent risk analysis.
@@ -40,6 +41,7 @@ Financial Sentinel goes beyond basic tweet fetching with sophisticated multi-end
 - Full `expansions`: `author_id`, `referenced_tweets.id`
 - Rich `user.fields`: `username`, `verified`, `verified_type`, `public_metrics`, `description`
 - Smart operators: `-is:retweet`, `lang:en`, relevancy vs recency sorting
+
 
 ### Real-time Responsiveness
 
@@ -196,6 +198,11 @@ Start Monitoring ──▶ Try Filtered Stream (30s timeout)
                             ▼
                    Process Tweets ──▶ Frontend SSE
 ```
+
+### Main Interface
+
+![Financial Sentinel Dashboard](docs/images/screenshot-main.png)
+*Main dashboard featuring real-time monitoring, risk analysis cards, viral scoring, trend charts, and live stream feed*
 
 ---
 
@@ -407,6 +414,9 @@ Sentinel: 📊 **Coinbase** | Risk: MEDIUM
 ✅ **Action**: Alert sent to Slack
 ```
 
+![Risk Analysis Dashboard](docs/images/screenshot-analysis.png)
+*Real-time risk analysis with viral scoring, trend velocity, and grounded evidence*
+
 ### Live Stream Monitoring
 
 The UI shows real-time status updates:
@@ -418,6 +428,9 @@ The UI shows real-time status updates:
 [12:34:46] Found 5 new tweets
 [12:35:01] Found 3 new tweets
 ```
+
+![Live Monitoring Feed](docs/images/screenshot-stream.png)
+*Server-sent events streaming with progressive analysis updates and real-time status*
 
 ### SSE Streaming (JavaScript)
 
