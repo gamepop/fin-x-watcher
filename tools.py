@@ -2651,8 +2651,8 @@ class StreamMonitor:
 
                 yield event
 
-                # Trigger instant Grok analysis for high-urgency or high-engagement
-                if urgency == "high" or total_engagement >= self._high_engagement_threshold:
+                # Trigger instant Grok analysis for high-urgency, medium-urgency, or high-engagement
+                if urgency in ["high", "medium"] or total_engagement >= self._high_engagement_threshold:
                     grok_analysis = None
                     if self.grok_client:
                         try:
@@ -2672,12 +2672,36 @@ class StreamMonitor:
                         except Exception as e:
                             grok_analysis = {"error": str(e)}
 
+                    # Determine risk level for Slack alert
+                    # Only send Slack alerts for MEDIUM or HIGH urgency (not just high engagement)
+                    risk_level = "HIGH" if urgency == "high" else ("MEDIUM" if urgency == "medium" else "LOW")
+                    
+                    if urgency in ["high", "medium"]:
+                        try:
+                            summary = f"{', '.join(risk_signals) if risk_signals else 'Risk signals detected'}"
+                            if grok_analysis and isinstance(grok_analysis, dict):
+                                grok_summary = grok_analysis.get("summary") or grok_analysis.get("analysis", "")
+                                if grok_summary:
+                                    summary = grok_summary[:500]  # Limit length
+                            
+                            # Send Slack notification for MEDIUM or HIGH risk
+                            send_alert(
+                                bank_name=inst_name,
+                                risk_level=risk_level,
+                                summary=summary,
+                                source_link=post.get("url")
+                            )
+                        except Exception as e:
+                            # Don't fail the stream if Slack fails
+                            pass
+
                     yield {
                         "type": "alert",
-                        "alert_reason": "high_urgency" if urgency == "high" else "high_engagement",
-                        "message": f"⚠️ {inst_name}: {', '.join(risk_signals) if risk_signals else 'High engagement detected'}",
+                        "alert_reason": "high_urgency" if urgency == "high" else ("medium_urgency" if urgency == "medium" else "high_engagement"),
+                        "message": f"⚠️ {inst_name}: {', '.join(risk_signals) if risk_signals else 'Risk signals detected'}",
                         "event": event,
                         "grok_analysis": grok_analysis,
+                        "risk_level": risk_level,
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     }
 
