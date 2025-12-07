@@ -464,7 +464,7 @@ class XAPIClient:
         include_trend_data: bool = True
     ) -> Dict[str, Any]:
         """
-        Comprehensive institution analysis using official X SDK.
+        Comprehensive institution analysis using official X SDK with type-specific keywords.
 
         Args:
             institution_name: Name of the institution
@@ -472,18 +472,21 @@ class XAPIClient:
             include_trend_data: Whether to fetch volume trend data
 
         Returns:
-            Enriched data with tweets, trends, and metadata
+            Enriched data with tweets, trends, and metadata including institution type
         """
-        # Risk-focused keywords (covers all institution types)
-        risk_keywords = [
+        # Get institution-specific context for targeted search
+        inst_context = get_institution_context(institution_name)
+        inst_type = inst_context["institution_type"]
+        type_specific_keywords = inst_context["risk_keywords"]
+
+        # Base risk keywords (common to all)
+        base_risk_keywords = [
             "outage", "down", "not working", "can't access", "can't login",
-            "fraud", "scam", "hack", "breach", "warning",
-            "bank run", "withdraw", "frozen", "closed", "fdic", "bankrupt",
-            "rug pull", "rugpull", "exit scam", "funds locked", "can't withdraw",
-            "insolvency", "paused withdrawals", "halted",
-            "can't sell", "can't buy", "order stuck", "margin call",
-            "sec", "lawsuit", "investigation", "subpoena"
+            "fraud", "scam", "hack", "breach", "warning"
         ]
+
+        # Combine base + type-specific keywords (prioritize type-specific)
+        risk_keywords = type_specific_keywords[:8] + base_risk_keywords[:6]
 
         primary_query = f'"{institution_name}"'
         risk_query = f'{primary_query} ({" OR ".join(risk_keywords[:12])})'
@@ -530,6 +533,8 @@ class XAPIClient:
             "total_fetched": len(all_tweets),
             "trend_data": trend_data,
             "sdk": self.sdk_version,
+            "institution_type": inst_type,
+            "risk_keywords_used": risk_keywords[:8],
             "api_metrics": {
                 "requests_made": self.request_count,
                 "success_rate": self.success_count / max(self.request_count, 1),
@@ -547,6 +552,357 @@ class XAPIClient:
             "error_count": self.error_count,
             "success_rate": round(self.success_count / max(self.request_count, 1), 3)
         }
+
+
+# =============================================================================
+# Institution Type Classification & Type-Specific Prompts
+# =============================================================================
+
+class InstitutionType(Enum):
+    """Types of financial institutions with specific risk profiles."""
+    TRADITIONAL_BANK = "traditional_bank"
+    NEOBANK = "neobank"
+    CRYPTO_EXCHANGE = "crypto_exchange"
+    CRYPTO_WALLET = "crypto_wallet"
+    TRADING_PLATFORM = "trading_platform"
+    PAYMENT_APP = "payment_app"
+    UNKNOWN = "unknown"
+
+
+# Institution classification database
+INSTITUTION_REGISTRY = {
+    # Traditional Banks
+    "chase": InstitutionType.TRADITIONAL_BANK,
+    "jpmorgan": InstitutionType.TRADITIONAL_BANK,
+    "bank of america": InstitutionType.TRADITIONAL_BANK,
+    "wells fargo": InstitutionType.TRADITIONAL_BANK,
+    "citibank": InstitutionType.TRADITIONAL_BANK,
+    "citi": InstitutionType.TRADITIONAL_BANK,
+    "us bank": InstitutionType.TRADITIONAL_BANK,
+    "pnc": InstitutionType.TRADITIONAL_BANK,
+    "capital one": InstitutionType.TRADITIONAL_BANK,
+    "td bank": InstitutionType.TRADITIONAL_BANK,
+    "truist": InstitutionType.TRADITIONAL_BANK,
+    "fifth third": InstitutionType.TRADITIONAL_BANK,
+    "regions": InstitutionType.TRADITIONAL_BANK,
+    "huntington": InstitutionType.TRADITIONAL_BANK,
+    "m&t bank": InstitutionType.TRADITIONAL_BANK,
+    "citizens bank": InstitutionType.TRADITIONAL_BANK,
+    "first republic": InstitutionType.TRADITIONAL_BANK,
+    "svb": InstitutionType.TRADITIONAL_BANK,
+    "silicon valley bank": InstitutionType.TRADITIONAL_BANK,
+    "signature bank": InstitutionType.TRADITIONAL_BANK,
+    "hsbc": InstitutionType.TRADITIONAL_BANK,
+    "barclays": InstitutionType.TRADITIONAL_BANK,
+    "deutsche bank": InstitutionType.TRADITIONAL_BANK,
+
+    # Neobanks / Digital Banks
+    "chime": InstitutionType.NEOBANK,
+    "sofi": InstitutionType.NEOBANK,
+    "varo": InstitutionType.NEOBANK,
+    "current": InstitutionType.NEOBANK,
+    "ally": InstitutionType.NEOBANK,
+    "marcus": InstitutionType.NEOBANK,
+    "discover bank": InstitutionType.NEOBANK,
+    "revolut": InstitutionType.NEOBANK,
+    "n26": InstitutionType.NEOBANK,
+    "monzo": InstitutionType.NEOBANK,
+    "starling": InstitutionType.NEOBANK,
+    "dave": InstitutionType.NEOBANK,
+    "aspiration": InstitutionType.NEOBANK,
+    "one finance": InstitutionType.NEOBANK,
+
+    # Crypto Exchanges
+    "coinbase": InstitutionType.CRYPTO_EXCHANGE,
+    "binance": InstitutionType.CRYPTO_EXCHANGE,
+    "binance.us": InstitutionType.CRYPTO_EXCHANGE,
+    "kraken": InstitutionType.CRYPTO_EXCHANGE,
+    "gemini": InstitutionType.CRYPTO_EXCHANGE,
+    "crypto.com": InstitutionType.CRYPTO_EXCHANGE,
+    "ftx": InstitutionType.CRYPTO_EXCHANGE,
+    "kucoin": InstitutionType.CRYPTO_EXCHANGE,
+    "bitfinex": InstitutionType.CRYPTO_EXCHANGE,
+    "bitstamp": InstitutionType.CRYPTO_EXCHANGE,
+    "okx": InstitutionType.CRYPTO_EXCHANGE,
+    "bybit": InstitutionType.CRYPTO_EXCHANGE,
+    "huobi": InstitutionType.CRYPTO_EXCHANGE,
+    "gate.io": InstitutionType.CRYPTO_EXCHANGE,
+    "upbit": InstitutionType.CRYPTO_EXCHANGE,
+    "robinhood crypto": InstitutionType.CRYPTO_EXCHANGE,
+    "coinbase pro": InstitutionType.CRYPTO_EXCHANGE,
+
+    # Crypto Wallets
+    "metamask": InstitutionType.CRYPTO_WALLET,
+    "phantom": InstitutionType.CRYPTO_WALLET,
+    "ledger": InstitutionType.CRYPTO_WALLET,
+    "trezor": InstitutionType.CRYPTO_WALLET,
+    "trust wallet": InstitutionType.CRYPTO_WALLET,
+    "coinbase wallet": InstitutionType.CRYPTO_WALLET,
+    "exodus": InstitutionType.CRYPTO_WALLET,
+    "atomic wallet": InstitutionType.CRYPTO_WALLET,
+    "electrum": InstitutionType.CRYPTO_WALLET,
+    "myetherwallet": InstitutionType.CRYPTO_WALLET,
+    "rainbow wallet": InstitutionType.CRYPTO_WALLET,
+    "argent": InstitutionType.CRYPTO_WALLET,
+    "zerion": InstitutionType.CRYPTO_WALLET,
+    "rabby": InstitutionType.CRYPTO_WALLET,
+    "uniswap wallet": InstitutionType.CRYPTO_WALLET,
+    "safepal": InstitutionType.CRYPTO_WALLET,
+    "bitget wallet": InstitutionType.CRYPTO_WALLET,
+
+    # Trading Platforms
+    "robinhood": InstitutionType.TRADING_PLATFORM,
+    "webull": InstitutionType.TRADING_PLATFORM,
+    "e*trade": InstitutionType.TRADING_PLATFORM,
+    "etrade": InstitutionType.TRADING_PLATFORM,
+    "td ameritrade": InstitutionType.TRADING_PLATFORM,
+    "fidelity": InstitutionType.TRADING_PLATFORM,
+    "schwab": InstitutionType.TRADING_PLATFORM,
+    "charles schwab": InstitutionType.TRADING_PLATFORM,
+    "interactive brokers": InstitutionType.TRADING_PLATFORM,
+    "ibkr": InstitutionType.TRADING_PLATFORM,
+    "merrill edge": InstitutionType.TRADING_PLATFORM,
+    "vanguard": InstitutionType.TRADING_PLATFORM,
+    "tastyworks": InstitutionType.TRADING_PLATFORM,
+    "tastytrade": InstitutionType.TRADING_PLATFORM,
+    "moomoo": InstitutionType.TRADING_PLATFORM,
+    "public": InstitutionType.TRADING_PLATFORM,
+    "firstrade": InstitutionType.TRADING_PLATFORM,
+    "m1 finance": InstitutionType.TRADING_PLATFORM,
+    "acorns": InstitutionType.TRADING_PLATFORM,
+    "stash": InstitutionType.TRADING_PLATFORM,
+
+    # Payment Apps
+    "venmo": InstitutionType.PAYMENT_APP,
+    "paypal": InstitutionType.PAYMENT_APP,
+    "cash app": InstitutionType.PAYMENT_APP,
+    "cashapp": InstitutionType.PAYMENT_APP,
+    "zelle": InstitutionType.PAYMENT_APP,
+    "apple pay": InstitutionType.PAYMENT_APP,
+    "google pay": InstitutionType.PAYMENT_APP,
+    "square": InstitutionType.PAYMENT_APP,
+    "stripe": InstitutionType.PAYMENT_APP,
+    "wise": InstitutionType.PAYMENT_APP,
+    "transferwise": InstitutionType.PAYMENT_APP,
+    "remitly": InstitutionType.PAYMENT_APP,
+    "western union": InstitutionType.PAYMENT_APP,
+    "moneygram": InstitutionType.PAYMENT_APP,
+    "afterpay": InstitutionType.PAYMENT_APP,
+    "klarna": InstitutionType.PAYMENT_APP,
+    "affirm": InstitutionType.PAYMENT_APP,
+}
+
+
+def classify_institution(name: str) -> InstitutionType:
+    """Classify an institution by name to determine its type."""
+    name_lower = name.lower().strip()
+
+    # Direct match
+    if name_lower in INSTITUTION_REGISTRY:
+        return INSTITUTION_REGISTRY[name_lower]
+
+    # Partial match (e.g., "Chase Bank" matches "chase")
+    for key, inst_type in INSTITUTION_REGISTRY.items():
+        if key in name_lower or name_lower in key:
+            return inst_type
+
+    # Keyword-based classification
+    crypto_keywords = ["crypto", "coin", "token", "defi", "dex", "swap", "chain", "wallet"]
+    bank_keywords = ["bank", "banking", "credit union", "federal"]
+    trading_keywords = ["trade", "trading", "broker", "invest", "stocks"]
+    payment_keywords = ["pay", "payment", "transfer", "send money", "cash"]
+
+    for keyword in crypto_keywords:
+        if keyword in name_lower:
+            return InstitutionType.CRYPTO_EXCHANGE
+    for keyword in bank_keywords:
+        if keyword in name_lower:
+            return InstitutionType.TRADITIONAL_BANK
+    for keyword in trading_keywords:
+        if keyword in name_lower:
+            return InstitutionType.TRADING_PLATFORM
+    for keyword in payment_keywords:
+        if keyword in name_lower:
+            return InstitutionType.PAYMENT_APP
+
+    return InstitutionType.UNKNOWN
+
+
+# Type-specific risk keywords
+INSTITUTION_RISK_KEYWORDS = {
+    InstitutionType.TRADITIONAL_BANK: [
+        "fdic", "bank run", "insolvency", "bailout", "bankruptcy",
+        "frozen accounts", "mass withdrawals", "capital requirements",
+        "stress test", "liquidity crisis", "fed intervention",
+        "branch closures", "layoffs", "credit rating", "downgrade"
+    ],
+    InstitutionType.NEOBANK: [
+        "charter issues", "partner bank", "fdic pass-through",
+        "account closures", "funds delayed", "verification issues",
+        "debanking", "compliance", "regulatory scrutiny",
+        "overdraft", "early paycheck", "savings rate"
+    ],
+    InstitutionType.CRYPTO_EXCHANGE: [
+        "rug pull", "exit scam", "funds locked", "paused withdrawals",
+        "cold wallet drained", "hot wallet hack", "proof of reserves",
+        "insolvency", "sec lawsuit", "cftc", "trading halted",
+        "delisting", "liquidity crisis", "customer funds",
+        "ftx", "celsius", "3ac", "contagion"
+    ],
+    InstitutionType.CRYPTO_WALLET: [
+        "exploit", "vulnerability", "compromised", "drainer",
+        "phishing", "malicious contract", "approval exploit",
+        "seed phrase", "private key", "firmware", "supply chain",
+        "blind signing", "signature request", "airdrop scam"
+    ],
+    InstitutionType.TRADING_PLATFORM: [
+        "can't execute", "order stuck", "margin call", "pdt rule",
+        "trading halted", "circuit breaker", "options expiry",
+        "settlement", "t+1", "buying restricted", "selling restricted",
+        "meme stocks", "short squeeze", "volatility halt"
+    ],
+    InstitutionType.PAYMENT_APP: [
+        "frozen account", "limited access", "pending review",
+        "fraud hold", "chargeback", "scam", "unauthorized",
+        "failed transfer", "money missing", "dispute",
+        "instant transfer", "standard transfer", "business account"
+    ]
+}
+
+
+# Type-specific prompt sections
+INSTITUTION_PROMPT_SECTIONS = {
+    InstitutionType.TRADITIONAL_BANK: """
+TRADITIONAL BANK ANALYSIS CONTEXT:
+You are analyzing a TRADITIONAL BANK (FDIC-insured depository institution).
+
+KEY RISK SIGNALS TO WATCH:
+1. BANK RUN INDICATORS: Mass withdrawal reports, long lines at branches, ATM limits
+2. REGULATORY: FDIC actions, OCC warnings, Fed stress test failures, consent orders
+3. LIQUIDITY: Interbank lending issues, capital ratio concerns, credit rating downgrades
+4. CONTAGION: Connections to failing institutions, exposure to problem sectors
+5. OPERATIONS: Branch closures, layoffs, system outages affecting deposits
+
+SEVERITY MODIFIERS:
+- Regional banks: Higher scrutiny after SVB/Signature failures
+- Money center banks: Systemic importance = higher threshold for HIGH
+- Credit rating changes: Immediate attention required
+- FDIC mentions: Always flag for review""",
+
+    InstitutionType.NEOBANK: """
+NEOBANK / DIGITAL BANK ANALYSIS CONTEXT:
+You are analyzing a NEOBANK (digital-first bank, often using partner bank charters).
+
+KEY RISK SIGNALS TO WATCH:
+1. PARTNER BANK ISSUES: Problems with underlying bank (FDIC pass-through risks)
+2. ACCOUNT ACTIONS: Mass account closures, debanking reports, verification freezes
+3. FUND ACCESS: Delayed deposits, withdrawal issues, transfer failures
+4. REGULATORY: Compliance issues, fintech charter concerns, consumer complaints
+5. FEATURE ISSUES: Early paycheck, overdraft, savings rate changes
+
+SEVERITY MODIFIERS:
+- Partner bank dependency: Check for underlying bank issues
+- Account closure patterns: May indicate compliance crackdown
+- Rapid growth concerns: Scaling vs. customer service
+- Synapse/middleware issues: Can affect multiple neobanks""",
+
+    InstitutionType.CRYPTO_EXCHANGE: """
+CRYPTO EXCHANGE ANALYSIS CONTEXT:
+You are analyzing a CRYPTOCURRENCY EXCHANGE (centralized trading platform).
+
+KEY RISK SIGNALS TO WATCH:
+1. WITHDRAWAL ISSUES: Paused withdrawals, processing delays, "maintenance" claims
+2. PROOF OF RESERVES: Failed audits, questionable attestations, Merkle tree issues
+3. REGULATORY: SEC/CFTC actions, securities violations, money transmission
+4. INSOLVENCY: FTX comparisons, Celsius comparisons, liquidity concerns
+5. SECURITY: Hot wallet drains, API exploits, insider threats
+
+SEVERITY MODIFIERS:
+- Withdrawal pauses: IMMEDIATE HIGH RISK (FTX pattern)
+- Proof of reserves issues: Elevated concern
+- Multiple verified reports: Weight heavily
+- Offshore exchanges: Higher baseline risk
+- Post-FTX: Market extremely sensitive to exchange risk""",
+
+    InstitutionType.CRYPTO_WALLET: """
+CRYPTO WALLET ANALYSIS CONTEXT:
+You are analyzing a CRYPTOCURRENCY WALLET (self-custody or managed wallet).
+
+KEY RISK SIGNALS TO WATCH:
+1. SECURITY: Exploits, vulnerabilities, drainer contracts, phishing campaigns
+2. UPDATE ISSUES: Bad firmware, compromised updates, supply chain attacks
+3. INTEGRATION: dApp connection issues, signature request problems
+4. SCAMS: Fake apps, impersonation, social engineering targeting users
+5. OPERATIONAL: Sync issues, balance display errors, transaction failures
+
+SEVERITY MODIFIERS:
+- Hardware vs. Software: Different risk profiles
+- Browser extension wallets: Higher phishing exposure
+- Mobile wallets: App store security concerns
+- Multi-sig: Complexity can introduce bugs
+- Active exploit: IMMEDIATE HIGH RISK""",
+
+    InstitutionType.TRADING_PLATFORM: """
+TRADING PLATFORM ANALYSIS CONTEXT:
+You are analyzing a TRADING PLATFORM (stock/options broker).
+
+KEY RISK SIGNALS TO WATCH:
+1. EXECUTION: Order failures, stuck orders, delayed fills, wrong prices
+2. ACCESS: Login issues, app crashes during market hours, API outages
+3. RESTRICTIONS: Buying/selling halts, position-close-only, margin changes
+4. REGULATORY: FINRA actions, SEC fines, pattern day trading issues
+5. SETTLEMENT: T+1 issues, failed settlements, account restrictions
+
+SEVERITY MODIFIERS:
+- Market hours issues: Much more severe than after-hours
+- High volatility events: Meme stocks, earnings, Fed days
+- Options expiry: Friday issues especially critical
+- Margin calls: Can cascade quickly
+- 2021 GME comparisons: Market sensitive to trading restrictions""",
+
+    InstitutionType.PAYMENT_APP: """
+PAYMENT APP ANALYSIS CONTEXT:
+You are analyzing a PAYMENT APP (P2P transfers, digital payments).
+
+KEY RISK SIGNALS TO WATCH:
+1. FUND ACCESS: Account freezes, limited functionality, pending reviews
+2. TRANSFERS: Failed transactions, delayed payments, missing money
+3. FRAUD: Unauthorized transactions, scam waves, account takeovers
+4. DISPUTES: Chargeback issues, buyer/seller protection problems
+5. VERIFICATION: Identity verification loops, document requests
+
+SEVERITY MODIFIERS:
+- Account freezes: Common but concerning at scale
+- Business accounts: Higher stakes, more scrutiny
+- Crypto features: Additional regulatory exposure
+- BNPL issues: Credit-related concerns
+- Fraud waves: Often target specific platforms""",
+
+    InstitutionType.UNKNOWN: """
+FINANCIAL INSTITUTION ANALYSIS CONTEXT:
+You are analyzing a FINANCIAL SERVICE (type not specifically categorized).
+
+Apply general financial risk analysis principles:
+1. SERVICE DISRUPTION: Outages, access issues, functionality problems
+2. FUND SECURITY: Withdrawal issues, missing funds, unauthorized access
+3. REGULATORY: Legal actions, compliance issues, license problems
+4. REPUTATION: Trust signals, verified complaints, official statements
+5. OPERATIONAL: Customer service issues, processing delays
+
+Use standard risk assessment without institution-type-specific weighting."""
+}
+
+
+def get_institution_context(institution_name: str) -> Dict[str, Any]:
+    """Get type-specific context for an institution."""
+    inst_type = classify_institution(institution_name)
+
+    return {
+        "institution_name": institution_name,
+        "institution_type": inst_type.value,
+        "risk_keywords": INSTITUTION_RISK_KEYWORDS.get(inst_type, []),
+        "prompt_section": INSTITUTION_PROMPT_SECTIONS.get(inst_type, INSTITUTION_PROMPT_SECTIONS[InstitutionType.UNKNOWN])
+    }
 
 
 # =============================================================================
@@ -582,7 +938,7 @@ class GrokClient:
         model: str = "grok-4-1-fast"
     ) -> Dict[str, Any]:
         """
-        Analyze tweets with enhanced intelligence and full traceability.
+        Analyze tweets with enhanced intelligence, full traceability, and type-specific prompts.
 
         Args:
             bank_name: Institution being analyzed
@@ -590,10 +946,16 @@ class GrokClient:
             model: Grok model to use
 
         Returns:
-            Comprehensive analysis with traceability
+            Comprehensive analysis with traceability and institution type context
         """
         tweets = tweet_data.get("tweets", [])
         trend_data = tweet_data.get("trend_data", {})
+
+        # Get institution-specific context
+        inst_context = get_institution_context(bank_name)
+        inst_type = inst_context["institution_type"]
+        type_specific_prompt = inst_context["prompt_section"]
+        type_specific_keywords = inst_context["risk_keywords"]
 
         if not tweets:
             return {
@@ -603,7 +965,8 @@ class GrokClient:
                 "tweet_count": 0,
                 "top_tweets": [],
                 "viral_score": 0,
-                "trend_analysis": "No data available"
+                "trend_analysis": "No data available",
+                "institution_type": inst_type
             }
 
         # Calculate aggregate metrics for intelligence
@@ -629,16 +992,22 @@ TWEET VOLUME TREND (last 24 hours):
 - {"SPIKING - Unusual volume increase detected!" if is_spiking else "Normal volume patterns"}
 """
 
-        system_prompt = """You are an elite financial risk analyst specializing in real-time monitoring of financial institutions via social media signals.
+        # Build institution-type-specific system prompt
+        system_prompt = f"""You are an elite financial risk analyst specializing in real-time monitoring of financial institutions via social media signals.
+
+{type_specific_prompt}
+
+TYPE-SPECIFIC KEYWORDS TO WATCH: {', '.join(type_specific_keywords[:10])}
 
 Your analysis must be:
 1. GROUNDED - Only cite information from the provided tweets
 2. TRACEABLE - Reference specific tweets by their URL when making claims
 3. QUANTITATIVE - Include engagement metrics to support severity assessment
 4. ACTIONABLE - Provide clear risk level with justification
+5. TYPE-AWARE - Apply the institution-type-specific risk signals above
 
 RISK LEVELS:
-- HIGH: Platform-wide outages (multiple verified reports), withdrawal freezes confirmed, hack/breach with evidence, regulatory action announced, bank run signals (mass withdrawal reports), rug pull indicators (crypto)
+- HIGH: Platform-wide outages (multiple verified reports), withdrawal freezes confirmed, hack/breach with evidence, regulatory action announced, bank run signals, rug pull indicators, active exploits
 - MEDIUM: Localized outages (some reports, not widespread), elevated complaint volume, unconfirmed but spreading rumors, isolated access issues, delayed transactions
 - LOW: Normal operations, routine individual complaints, minor bugs, promotional content, no systemic indicators
 
@@ -648,30 +1017,27 @@ CREDIBILITY WEIGHTING:
 - High-engagement tweets (many RTs/likes): HIGH weight
 - New accounts or low engagement: LOW weight
 
-INSTITUTION-SPECIFIC SIGNALS:
-- Banks: FDIC mentions, bank run, mass withdrawals, frozen accounts
-- Crypto Exchanges: Rug pull, exit scam, funds locked, paused withdrawals, cold wallet drained
-- Crypto Wallets: Exploit, compromised, drainer
-- Trading Apps: Can't execute trades, margin calls, order failures during volatility
-- Payment Apps: Frozen accounts, failed transfers, fraud waves
-- Neobanks: Account closures, charter issues, fund delays
-
 Respond in this exact JSON format:
-{
+{{
     "risk_level": "HIGH" | "MEDIUM" | "LOW",
     "summary": "2-3 sentence assessment citing specific evidence",
     "key_findings": ["Finding 1 with tweet evidence", "Finding 2"],
     "top_concerning_tweets": [
-        {"text": "tweet text (truncated)", "url": "full url", "engagement": "X RTs, Y likes", "why_concerning": "reason"}
+        {{"text": "tweet text (truncated)", "url": "full url", "engagement": "X RTs, Y likes", "why_concerning": "reason"}}
     ],
     "viral_indicators": "Assessment of spread velocity and influential users",
     "confidence": 0.0-1.0,
     "recommended_action": "Specific action recommendation"
-}"""
+}}"""
 
-        user_prompt = f"""Analyze these tweets about {bank_name} for financial risk indicators:
+        user_prompt = f"""Analyze these tweets about {bank_name} ({inst_type.replace('_', ' ').title()}) for financial risk indicators:
 
 {trend_context}
+
+INSTITUTION CONTEXT:
+- Name: {bank_name}
+- Type: {inst_type.replace('_', ' ').title()}
+- Type-specific risk keywords: {', '.join(type_specific_keywords[:8])}
 
 AGGREGATE METRICS:
 - Tweets analyzed: {len(tweets)}
@@ -684,7 +1050,7 @@ TWEETS (sorted by credibility, includes direct URLs):
 
 {tweets_text}
 
-Provide your risk assessment. Remember to cite specific tweet URLs in your findings."""
+Provide your risk assessment applying {inst_type.replace('_', ' ')} analysis context. Remember to cite specific tweet URLs in your findings."""
 
         try:
             response = self.client.chat.completions.create(
@@ -700,13 +1066,15 @@ Provide your risk assessment. Remember to cite specific tweet URLs in your findi
 
             result = json.loads(response.choices[0].message.content)
 
-            # Enrich with metadata
+            # Enrich with metadata including institution type
             result["tweet_count"] = len(tweets)
             result["model_used"] = model
             result["viral_score"] = round(viral_score, 1)
             result["verified_sources"] = verified_tweet_count
             result["trend_velocity"] = trend_data.get("velocity_change_percent", 0) if trend_data else 0
             result["is_trending_up"] = trend_data.get("is_spiking", False) if trend_data else False
+            result["institution_type"] = inst_type
+            result["type_specific_keywords_checked"] = type_specific_keywords[:5]
 
             # Add top 3 tweets for frontend display
             result["evidence_tweets"] = [
@@ -775,48 +1143,61 @@ def _grok_live_search_analysis(bank_name: str) -> Dict[str, Any]:
     """
     Fallback: Use Grok's live search capability when X API is rate limited.
     Grok can search X/Twitter in real-time as part of its response.
+    Now includes institution-type-specific prompts.
     """
     api_key = os.getenv("XAI_API_KEY")
     if not api_key:
         raise ValueError("XAI_API_KEY is required for Grok fallback")
+
+    # Get institution-specific context
+    inst_context = get_institution_context(bank_name)
+    inst_type = inst_context["institution_type"]
+    type_specific_prompt = inst_context["prompt_section"]
+    type_specific_keywords = inst_context["risk_keywords"]
 
     client = OpenAI(
         api_key=api_key,
         base_url="https://api.x.ai/v1"
     )
 
-    system_prompt = """You are a financial risk analyst with real-time access to X (Twitter) data.
+    system_prompt = f"""You are a financial risk analyst with real-time access to X (Twitter) data.
 
 IMPORTANT: You have live search enabled. Search X/Twitter for recent posts about the institution.
 
-Analyze real-time social media sentiment for financial risk indicators.
+{type_specific_prompt}
+
+TYPE-SPECIFIC KEYWORDS TO SEARCH: {', '.join(type_specific_keywords[:8])}
 
 RISK LEVELS:
-- HIGH: Platform-wide outages, withdrawal freezes, hack/breach confirmed, regulatory action, bank run signals
+- HIGH: Platform-wide outages, withdrawal freezes, hack/breach confirmed, regulatory action, bank run signals, active exploits
 - MEDIUM: Localized outages, elevated complaints, unconfirmed rumors, isolated access issues
 - LOW: Normal operations, routine complaints, minor bugs, no systemic issues
 
 Return your analysis as JSON:
-{
+{{
     "risk_level": "HIGH" | "MEDIUM" | "LOW",
     "summary": "Brief overall assessment based on what you found",
     "key_findings": ["Finding 1", "Finding 2"],
     "sample_posts": ["Relevant post 1 with URL if available", "Relevant post 2"],
     "post_count_estimate": "approximate number of relevant posts found",
     "data_source": "Grok Live Search (X API fallback)",
+    "institution_type": "{inst_type}",
     "confidence": 0.0-1.0
-}"""
+}}"""
 
-    user_prompt = f"""Search X/Twitter for recent posts about "{bank_name}" and analyze for financial risk indicators.
+    user_prompt = f"""Search X/Twitter for recent posts about "{bank_name}" ({inst_type.replace('_', ' ').title()}) and analyze for financial risk indicators.
+
+Institution Type: {inst_type.replace('_', ' ').title()}
+Key risk signals for this type: {', '.join(type_specific_keywords[:6])}
 
 Look for:
-- Outage reports, service issues
-- Fraud or security concerns
-- Withdrawal or access problems
-- Regulatory news
+- {type_specific_keywords[0] if type_specific_keywords else 'Outage reports'}
+- {type_specific_keywords[1] if len(type_specific_keywords) > 1 else 'Security concerns'}
+- {type_specific_keywords[2] if len(type_specific_keywords) > 2 else 'Access problems'}
 - Customer complaints at unusual volume
+- Regulatory or legal news
 
-Provide your risk assessment based on what you find in real-time. Include post URLs when possible."""
+Provide your risk assessment applying {inst_type.replace('_', ' ')} context. Include post URLs when possible."""
 
     try:
         response = client.chat.completions.create(
@@ -839,6 +1220,7 @@ Provide your risk assessment based on what you find in real-time. Include post U
             if json_match:
                 result = json.loads(json_match.group())
                 result["data_source"] = "Grok Live Search (X API fallback)"
+                result["institution_type"] = inst_type
                 return result
         except json.JSONDecodeError:
             pass
@@ -848,6 +1230,7 @@ Provide your risk assessment based on what you find in real-time. Include post U
             "summary": content[:500],
             "key_findings": [],
             "data_source": "Grok Live Search (X API fallback)",
+            "institution_type": inst_type,
             "confidence": 0.5
         }
 
@@ -857,6 +1240,7 @@ Provide your risk assessment based on what you find in real-time. Include post U
             "summary": f"Grok search error: {str(e)}",
             "key_findings": [],
             "data_source": "Grok Live Search (failed)",
+            "institution_type": inst_type,
             "error": str(e)
         }
 
@@ -912,6 +1296,8 @@ def fetch_market_sentiment(bank_name: str) -> str:
             "data_source": "X API v2 (api.x.com) - Multi-endpoint",
             "endpoints_used": ["/tweets/search/recent", "/tweets/counts/recent"],
             "analysis_model": "Grok 4.1 Fast (api.x.ai)",
+            "institution_type": tweet_data.get("institution_type", "unknown"),
+            "risk_keywords_used": tweet_data.get("risk_keywords_used", []),
             "tweet_count": tweet_data.get("total_fetched", 0),
             "analysis": analysis,
             "api_health": tweet_data.get("api_metrics", {}),
@@ -946,6 +1332,7 @@ def fetch_market_sentiment(bank_name: str) -> str:
                 "timestamp": timestamp,
                 "data_source": "Grok Live Search (X API rate limited)",
                 "analysis_model": "Grok with live X search",
+                "institution_type": analysis.get("institution_type", "unknown"),
                 "fallback_reason": rate_limit_error,
                 "analysis": analysis
             }, indent=2)
