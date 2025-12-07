@@ -327,6 +327,36 @@ async def generate_analysis_stream(institution: str) -> AsyncGenerator[str, None
 
         # Stage 6: Results
         risk_level = analysis.get("risk_level", "UNKNOWN")
+        
+        # Send Slack alert for MEDIUM or HIGH risk
+        if risk_level in ["MEDIUM", "HIGH"]:
+            try:
+                summary = analysis.get("summary") or analysis.get("key_findings", [])
+                if isinstance(summary, list):
+                    summary = "; ".join(summary[:3])  # Take first 3 findings
+                if not summary or len(summary) < 10:
+                    summary = f"Risk level {risk_level} detected for {institution}"
+                
+                # Get source link from evidence tweets if available
+                source_link = None
+                evidence_tweets = analysis.get("evidence_tweets", [])
+                if evidence_tweets and len(evidence_tweets) > 0:
+                    source_link = evidence_tweets[0].get("url")
+                
+                # Call send_alert in thread pool to avoid blocking
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(
+                    None,
+                    send_alert,
+                    institution,
+                    risk_level,
+                    summary[:500],  # Limit length
+                    source_link
+                )
+            except Exception as e:
+                # Don't fail the stream if Slack fails
+                pass
+        
         yield f"event: result\ndata: {json.dumps({'stage': 'complete', 'institution': institution, 'risk_level': risk_level, 'analysis': analysis, 'tweet_count': tweet_count, 'data_source': 'X API v2 + Grok', 'timestamp': timestamp})}\n\n"
 
     except Exception as e:
@@ -350,6 +380,32 @@ async def generate_analysis_stream(institution: str) -> AsyncGenerator[str, None
             analysis = await loop.run_in_executor(None, _grok_live_search_analysis, institution)
 
             risk_level = analysis.get("risk_level", "UNKNOWN")
+            
+            # Send Slack alert for MEDIUM or HIGH risk (fallback path)
+            if risk_level in ["MEDIUM", "HIGH"]:
+                try:
+                    summary = analysis.get("summary") or analysis.get("key_findings", [])
+                    if isinstance(summary, list):
+                        summary = "; ".join(summary[:3])
+                    if not summary or len(summary) < 10:
+                        summary = f"Risk level {risk_level} detected for {institution}"
+                    
+                    source_link = None
+                    evidence_tweets = analysis.get("evidence_tweets", [])
+                    if evidence_tweets and len(evidence_tweets) > 0:
+                        source_link = evidence_tweets[0].get("url")
+                    
+                    await loop.run_in_executor(
+                        None,
+                        send_alert,
+                        institution,
+                        risk_level,
+                        summary[:500],
+                        source_link
+                    )
+                except Exception as e:
+                    pass
+            
             yield f"event: result\ndata: {json.dumps({'stage': 'complete', 'institution': institution, 'risk_level': risk_level, 'analysis': analysis, 'data_source': 'Grok Live Search (X API fallback)', 'fallback_reason': rate_limit_error, 'timestamp': timestamp})}\n\n"
 
         except Exception as fallback_error:
