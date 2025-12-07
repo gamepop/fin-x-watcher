@@ -861,87 +861,36 @@ async def stream_monitor_events():
 
         def stream_worker():
             """Worker that runs blocking stream and puts events in queue."""
-            import time
-            utf8_error_count = 0
-            max_utf8_errors = 10  # Max consecutive UTF-8 errors before backoff
-            
-            while not stop_event.is_set():
-                try:
-                    # Exponential backoff if we've had too many UTF-8 errors
-                    if utf8_error_count >= max_utf8_errors:
-                        backoff_seconds = min(2 ** (utf8_error_count - max_utf8_errors), 30)
-                        time.sleep(backoff_seconds)
-                        utf8_error_count = 0  # Reset after backoff
-                    
-                    stream_iter = iter(
-                        _stream_monitor.x_client.stream_posts(
-                            backfill_minutes=0,
-                            include_user_data=True
-                        )
-                    )
-                    
-                    # Reset error count on successful stream creation
-                    utf8_error_count = 0
-                    
-                    while True:
-                        try:
-                            post = next(stream_iter)
-                        except StopIteration:
-                            break
-                        except UnicodeDecodeError:
-                            # Skip malformed UTF-8 chunk and continue to next post
-                            utf8_error_count += 1
-                            if utf8_error_count > max_utf8_errors:
-                                # Too many consecutive errors, restart stream
-                                break
-                            continue
-
-                        if stop_event.is_set():
-                            break
-                        
-                        # Reset error count on successful read
-                        utf8_error_count = 0
-                        
-                        # Check if post is an error dictionary from stream_posts
-                        if isinstance(post, dict) and post.get("error"):
-                            # Stream error - put it in queue as error event
-                            asyncio.run_coroutine_threadsafe(
-                                event_queue.put({"type": "error", "error": post.get("error")}),
-                                loop
-                            )
-                            continue
-                        
-                        # Skip if post doesn't have required fields (not a valid tweet)
-                        if not isinstance(post, dict) or not post.get("id"):
-                            continue
-                        
-                        try:
-                            # Put event in queue (thread-safe)
-                            asyncio.run_coroutine_threadsafe(
-                                event_queue.put(post),
-                                loop
-                            )
-                        except UnicodeDecodeError:
-                            # Skip malformed UTF-8 chunks without killing the worker
-                            utf8_error_count += 1
-                            continue
-                except UnicodeDecodeError:
-                    # Handle UTF-8 errors at the outer level too
-                    utf8_error_count += 1
-                    time.sleep(0.1)  # Small delay before retry
-                    continue
-                except Exception as e:
-                    # Only log non-UTF-8 errors
-                    error_str = str(e).lower()
-                    if "utf-8" not in error_str and "codec" not in error_str:
+            try:
+                for post in _stream_monitor.x_client.stream_posts(
+                    backfill_minutes=0,
+                    include_user_data=True
+                ):
+                    if stop_event.is_set():
+                        break
+                    try:
+                        # Put event in queue (thread-safe)
                         asyncio.run_coroutine_threadsafe(
-                            event_queue.put({"type": "error", "error": str(e)}),
+                            event_queue.put(post),
                             loop
                         )
-                    # For UTF-8 related errors, just restart the stream
-                    utf8_error_count += 1
-                    time.sleep(0.1)  # Small delay before retry
-                    continue
+                    except UnicodeDecodeError:
+                        # Skip malformed UTF-8 chunks without killing the worker
+                        continue
+            except UnicodeDecodeError:
+                # Handle UTF-8 errors at the stream level - restart stream
+                asyncio.run_coroutine_threadsafe(
+                    event_queue.put({"type": "error", "error": "UTF-8 decode error, restarting stream"}),
+                    loop
+                )
+            except Exception as e:
+                # Only log non-UTF-8 errors
+                error_str = str(e).lower()
+                if "utf-8" not in error_str and "codec" not in error_str:
+                    asyncio.run_coroutine_threadsafe(
+                        event_queue.put({"type": "error", "error": str(e)}),
+                        loop
+                    )
 
         # Start stream worker in background
         future = loop.run_in_executor(executor, stream_worker)
