@@ -11,7 +11,10 @@ ag-ui-adk>=0.0.7
 # OpenAI SDK (for Grok API - OpenAI-compatible)
 openai>=1.50.0
 
-# X API Client - Official X Developer Kit
+# xAI SDK - Official xAI Python SDK (Responses API, x_search, web_search)
+xai-sdk
+
+# X API Client - Official X Developer Kit (streaming, precise queries)
 xdk
 requests>=2.31.0  # kept for fallback/utilities
 

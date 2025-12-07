@@ -1136,6 +1136,341 @@ Provide your risk assessment applying {inst_type.replace('_', ' ')} analysis con
 
 
 # =============================================================================
+# Grok Analysis Client - xai_sdk (Responses API + Server-Side Tools)
+# =============================================================================
+
+class GrokAnalysisClient:
+    """
+    Enhanced Grok client using the official xai_sdk for:
+    - Responses API (stateful conversations with 30-day retention)
+    - Server-side x_search (no X API rate limits)
+    - Streaming responses for real-time UI updates
+
+    Use this for:
+    - Stateful multi-turn analysis
+    - When X API is rate limited (x_search runs server-side)
+    - Deep investigation with conversation context
+    """
+
+    def __init__(self, api_key: Optional[str] = None):
+        self.api_key = api_key or os.getenv("XAI_API_KEY")
+        if not self.api_key:
+            raise ValueError("XAI_API_KEY is required for xai_sdk")
+
+        # Lazy import xai_sdk (may not be installed)
+        try:
+            from xai_sdk import Client as XAISDKClient
+            self.client = XAISDKClient(api_key=self.api_key)
+            self.sdk_available = True
+        except ImportError:
+            self.sdk_available = False
+            self.client = None
+
+        # Session storage: institution -> response_id
+        self.sessions: Dict[str, str] = {}
+
+        # Analysis history for delta tracking
+        self.analysis_history: Dict[str, List[Dict]] = {}
+
+    def is_available(self) -> bool:
+        """Check if xai_sdk is available."""
+        return self.sdk_available and self.client is not None
+
+    def get_session_id(self, institution: str) -> Optional[str]:
+        """Get existing session ID for an institution."""
+        return self.sessions.get(institution.lower())
+
+    def analyze_with_x_search(
+        self,
+        institution: str,
+        additional_context: Optional[str] = None,
+        continue_session: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Analyze institution using xai_sdk with server-side x_search.
+
+        Benefits:
+        - x_search runs on xAI servers (no X API quota usage)
+        - Responses API for stateful conversations
+        - AI-curated search results
+
+        Args:
+            institution: Name of the institution
+            additional_context: Extra context or follow-up question
+            continue_session: Whether to continue previous session
+
+        Returns:
+            Analysis result with session ID for continuation
+        """
+        if not self.is_available():
+            return {
+                "status": "error",
+                "error": "xai_sdk not available",
+                "fallback": "Use GrokClient instead"
+            }
+
+        from xai_sdk.chat import user, system
+        from xai_sdk.tools import x_search
+
+        # Get institution-specific context
+        inst_context = get_institution_context(institution)
+        inst_type = inst_context["institution_type"]
+        type_specific_prompt = inst_context["prompt_section"]
+        type_specific_keywords = inst_context["risk_keywords"]
+
+        # Build chat configuration
+        chat_kwargs = {
+            "model": "grok-4-1-fast",  # Optimized for tool calling
+            "tools": [x_search()],
+            "store_messages": True  # Enable Responses API
+        }
+
+        # Continue previous session if available
+        institution_key = institution.lower()
+        if continue_session and institution_key in self.sessions:
+            chat_kwargs["previous_response_id"] = self.sessions[institution_key]
+
+        try:
+            chat = self.client.chat.create(**chat_kwargs)
+
+            # System prompt with institution-specific context
+            system_prompt = f"""You are an elite financial risk analyst with real-time X (Twitter) search capabilities.
+
+{type_specific_prompt}
+
+TYPE-SPECIFIC KEYWORDS: {', '.join(type_specific_keywords[:8])}
+
+IMPORTANT INSTRUCTIONS:
+1. Use x_search to find recent posts about the institution
+2. Search for risk-related keywords specific to this institution type
+3. Analyze the sentiment and urgency of findings
+4. Include post URLs in your findings for traceability
+5. Provide a risk assessment: HIGH, MEDIUM, or LOW
+
+RISK LEVELS:
+- HIGH: Platform outages, withdrawal freezes, hacks, regulatory action, bank run signals
+- MEDIUM: Localized issues, elevated complaints, unconfirmed rumors
+- LOW: Normal operations, routine complaints, no systemic issues
+
+Respond with structured JSON:
+{{
+    "risk_level": "HIGH" | "MEDIUM" | "LOW",
+    "summary": "2-3 sentence assessment",
+    "key_findings": ["Finding with evidence"],
+    "evidence_posts": [{{"text": "post text", "url": "post url", "author": "@username"}}],
+    "search_queries_used": ["query1", "query2"],
+    "confidence": 0.0-1.0,
+    "recommended_action": "action if any"
+}}"""
+
+            chat.append(system(system_prompt))
+
+            # Build user prompt
+            if additional_context:
+                user_prompt = f"Continue analyzing {institution} ({inst_type.replace('_', ' ').title()}). {additional_context}"
+            else:
+                user_prompt = f"""Analyze {institution} ({inst_type.replace('_', ' ').title()}) for financial risk indicators.
+
+Search X for:
+1. "{institution}" + ({' OR '.join(type_specific_keywords[:4])})
+2. "{institution}" + (outage OR down OR "not working")
+3. Recent complaints or issues
+
+Provide your risk assessment with evidence from the posts you find."""
+
+            chat.append(user(user_prompt))
+
+            # Execute with streaming to capture tool calls
+            full_response = ""
+            tool_calls_made = []
+
+            for response, chunk in chat.stream():
+                if hasattr(chunk, 'tool_calls') and chunk.tool_calls:
+                    for tool_call in chunk.tool_calls:
+                        tool_calls_made.append({
+                            "tool": tool_call.function.name if hasattr(tool_call, 'function') else str(tool_call),
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        })
+                if hasattr(chunk, 'content') and chunk.content:
+                    full_response += chunk.content
+
+            # Save session ID for continuation
+            if hasattr(response, 'id') and response.id:
+                self.sessions[institution_key] = response.id
+
+            # Try to parse as JSON
+            result = self._parse_response(full_response, institution, inst_type)
+            result["session_id"] = self.sessions.get(institution_key)
+            result["tool_calls"] = tool_calls_made
+            result["data_source"] = "xai_sdk (x_search server-side)"
+            result["continued_session"] = continue_session and institution_key in self.sessions
+
+            # Track in history
+            if institution_key not in self.analysis_history:
+                self.analysis_history[institution_key] = []
+            self.analysis_history[institution_key].append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "risk_level": result.get("risk_level"),
+                "session_id": result.get("session_id")
+            })
+
+            return result
+
+        except Exception as e:
+            return {
+                "status": "error",
+                "error": str(e),
+                "institution": institution,
+                "institution_type": inst_type
+            }
+
+    def analyze_streaming(
+        self,
+        institution: str,
+        callback: Optional[Callable[[str], None]] = None
+    ) -> Generator[Dict, None, None]:
+        """
+        Stream analysis updates for real-time UI.
+
+        Yields:
+            Dict updates as analysis progresses
+        """
+        if not self.is_available():
+            yield {"status": "error", "error": "xai_sdk not available"}
+            return
+
+        from xai_sdk.chat import user, system
+        from xai_sdk.tools import x_search
+
+        inst_context = get_institution_context(institution)
+        inst_type = inst_context["institution_type"]
+        type_specific_prompt = inst_context["prompt_section"]
+
+        yield {
+            "stage": "initializing",
+            "message": f"Starting analysis for {institution} ({inst_type})...",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+        try:
+            chat = self.client.chat.create(
+                model="grok-4-1-fast",
+                tools=[x_search()],
+                store_messages=True
+            )
+
+            chat.append(system(f"You are a financial risk analyst. {type_specific_prompt}"))
+            chat.append(user(f"Analyze {institution} for financial risk using x_search."))
+
+            yield {
+                "stage": "searching",
+                "message": "Searching X for recent posts...",
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+
+            content_buffer = ""
+            for response, chunk in chat.stream():
+                if hasattr(chunk, 'tool_calls') and chunk.tool_calls:
+                    yield {
+                        "stage": "tool_call",
+                        "message": "Executing x_search...",
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+
+                if hasattr(chunk, 'content') and chunk.content:
+                    content_buffer += chunk.content
+                    if callback:
+                        callback(chunk.content)
+                    yield {
+                        "stage": "analyzing",
+                        "chunk": chunk.content,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+
+            # Final result
+            result = self._parse_response(content_buffer, institution, inst_type)
+
+            if hasattr(response, 'id') and response.id:
+                self.sessions[institution.lower()] = response.id
+                result["session_id"] = response.id
+
+            yield {
+                "stage": "complete",
+                "result": result,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+
+        except Exception as e:
+            yield {
+                "stage": "error",
+                "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+
+    def get_risk_trend(self, institution: str) -> Dict[str, Any]:
+        """
+        Get risk trend for an institution based on analysis history.
+
+        Returns:
+            Trend data showing risk level changes over time
+        """
+        institution_key = institution.lower()
+        history = self.analysis_history.get(institution_key, [])
+
+        if not history:
+            return {"trend": "no_data", "history": []}
+
+        risk_values = {"HIGH": 3, "MEDIUM": 2, "LOW": 1, "UNKNOWN": 0}
+
+        risk_scores = [
+            risk_values.get(h.get("risk_level", "UNKNOWN"), 0)
+            for h in history
+        ]
+
+        if len(risk_scores) < 2:
+            trend = "insufficient_data"
+        elif risk_scores[-1] > risk_scores[-2]:
+            trend = "escalating"
+        elif risk_scores[-1] < risk_scores[-2]:
+            trend = "improving"
+        else:
+            trend = "stable"
+
+        return {
+            "institution": institution,
+            "trend": trend,
+            "current_risk": history[-1].get("risk_level") if history else None,
+            "analysis_count": len(history),
+            "history": history[-5:]  # Last 5 analyses
+        }
+
+    def _parse_response(self, content: str, institution: str, inst_type: str) -> Dict[str, Any]:
+        """Parse response content, attempting JSON extraction."""
+        import re
+
+        try:
+            # Try to extract JSON from response
+            json_match = re.search(r'\{[\s\S]*\}', content)
+            if json_match:
+                result = json.loads(json_match.group())
+                result["institution"] = institution
+                result["institution_type"] = inst_type
+                return result
+        except json.JSONDecodeError:
+            pass
+
+        # Fallback to unstructured response
+        return {
+            "risk_level": "UNKNOWN",
+            "summary": content[:500] if content else "No response received",
+            "key_findings": [],
+            "institution": institution,
+            "institution_type": inst_type,
+            "raw_response": content
+        }
+
+
+# =============================================================================
 # Grok Live Search Fallback (When X API is rate limited)
 # =============================================================================
 
@@ -1249,53 +1584,93 @@ Provide your risk assessment applying {inst_type.replace('_', ' ')} context. Inc
 # Combined Sentiment Tool (ADK Tool Function - Enhanced)
 # =============================================================================
 
-def fetch_market_sentiment(bank_name: str) -> str:
+def fetch_market_sentiment(bank_name: str, use_xai_sdk: bool = True) -> str:
     """
     Fetch comprehensive real-time market sentiment for a financial institution.
 
-    This tool demonstrates SOPHISTICATED X API integration:
-    1. Uses multiple X API endpoints (/tweets/search/recent, /tweets/counts)
-    2. Implements circuit breaker and exponential backoff for resilience
-    3. Calculates viral risk scores and trend detection
-    4. Provides full traceability with tweet URLs
-    5. Falls back to Grok live search if X API is rate limited
+    DUAL-SDK ARCHITECTURE:
+    1. PRIMARY: xai_sdk with x_search (server-side, no rate limits, stateful)
+    2. FALLBACK: xdk + GrokClient (direct X API access, full tweet data)
+
+    Features:
+    - Stateful sessions with Responses API (30-day retention)
+    - Server-side x_search (bypasses X API rate limits)
+    - Automatic fallback to xdk for streaming/precise queries
+    - Full traceability with tweet URLs
+    - Institution-type-specific analysis
 
     Args:
         bank_name: The name of the institution (e.g., "Chase", "Coinbase", "Robinhood")
+        use_xai_sdk: Whether to try xai_sdk first (default True)
 
     Returns:
         JSON string containing comprehensive sentiment analysis with:
         - Risk level (HIGH/MEDIUM/LOW) with confidence score
         - Key findings with source tweet URLs
-        - Viral risk score and trend velocity
+        - Session ID for continuation (if using xai_sdk)
         - API health metrics
     """
     timestamp = datetime.now(timezone.utc).isoformat()
-    use_fallback = False
+
+    # =========================================================================
+    # Strategy 1: xai_sdk with x_search (server-side, stateful)
+    # =========================================================================
+    if use_xai_sdk:
+        try:
+            xai_client = GrokAnalysisClient()
+
+            if xai_client.is_available():
+                analysis = xai_client.analyze_with_x_search(bank_name)
+
+                if analysis.get("status") != "error":
+                    return json.dumps({
+                        "bank_name": bank_name,
+                        "status": "success",
+                        "timestamp": timestamp,
+                        "data_source": "xai_sdk (x_search server-side)",
+                        "sdk_used": "xai_sdk",
+                        "analysis_model": "Grok 4.1 Fast",
+                        "session_id": analysis.get("session_id"),
+                        "continued_session": analysis.get("continued_session", False),
+                        "institution_type": analysis.get("institution_type", "unknown"),
+                        "analysis": analysis,
+                        "tool_calls": analysis.get("tool_calls", []),
+                        "risk_trend": xai_client.get_risk_trend(bank_name)
+                    }, indent=2)
+
+        except Exception as e:
+            # Log but continue to fallback
+            pass
+
+    # =========================================================================
+    # Strategy 2: xdk + GrokClient (direct X API, full tweet data)
+    # =========================================================================
+    use_grok_fallback = False
     rate_limit_error = None
 
     try:
-        # Initialize enhanced clients
+        # Initialize xdk-based clients
         x_client = XAPIClient()
         grok_client = GrokClient()
 
-        # Fetch comprehensive data using multiple endpoints
+        # Fetch comprehensive data using xdk
         tweet_data = x_client.get_institution_mentions(
             bank_name,
             max_results=100,
             include_trend_data=True
         )
 
-        # Analyze with enhanced Grok
+        # Analyze with GrokClient (OpenAI-compatible)
         analysis = grok_client.analyze_sentiment(bank_name, tweet_data)
 
         return json.dumps({
             "bank_name": bank_name,
             "status": "success",
             "timestamp": timestamp,
-            "data_source": "X API v2 (api.x.com) - Multi-endpoint",
+            "data_source": "xdk + GrokClient (X API v2 direct)",
+            "sdk_used": "xdk",
             "endpoints_used": ["/tweets/search/recent", "/tweets/counts/recent"],
-            "analysis_model": "Grok 4.1 Fast (api.x.ai)",
+            "analysis_model": "Grok 4.1 Fast (OpenAI-compatible)",
             "institution_type": tweet_data.get("institution_type", "unknown"),
             "risk_keywords_used": tweet_data.get("risk_keywords_used", []),
             "tweet_count": tweet_data.get("total_fetched", 0),
@@ -1310,7 +1685,7 @@ def fetch_market_sentiment(bank_name: str) -> str:
     except Exception as e:
         error_str = str(e).lower()
         if "rate limit" in error_str or "circuit breaker" in error_str:
-            use_fallback = True
+            use_grok_fallback = True
             rate_limit_error = str(e)
         else:
             return json.dumps({
@@ -1321,8 +1696,10 @@ def fetch_market_sentiment(bank_name: str) -> str:
                 "recovery_suggestion": "Will retry with exponential backoff"
             }, indent=2)
 
-    # Fallback to Grok live search when X API is unavailable
-    if use_fallback:
+    # =========================================================================
+    # Strategy 3: Grok Live Search fallback (when all else fails)
+    # =========================================================================
+    if use_grok_fallback:
         try:
             analysis = _grok_live_search_analysis(bank_name)
 
@@ -1330,7 +1707,8 @@ def fetch_market_sentiment(bank_name: str) -> str:
                 "bank_name": bank_name,
                 "status": "success",
                 "timestamp": timestamp,
-                "data_source": "Grok Live Search (X API rate limited)",
+                "data_source": "Grok Live Search (all SDKs failed/rate limited)",
+                "sdk_used": "openai (grok-compatible)",
                 "analysis_model": "Grok with live X search",
                 "institution_type": analysis.get("institution_type", "unknown"),
                 "fallback_reason": rate_limit_error,
@@ -1341,9 +1719,106 @@ def fetch_market_sentiment(bank_name: str) -> str:
             return json.dumps({
                 "bank_name": bank_name,
                 "status": "error",
-                "error": f"Both X API and Grok fallback failed. X API: {rate_limit_error}. Grok: {str(fallback_error)}",
+                "error": f"All strategies failed. xdk: {rate_limit_error}. Grok fallback: {str(fallback_error)}",
                 "timestamp": timestamp
             }, indent=2)
+
+
+def fetch_market_sentiment_streaming(
+    bank_name: str,
+    callback: Optional[Callable[[Dict], None]] = None
+) -> Generator[Dict, None, None]:
+    """
+    Stream market sentiment analysis with real-time updates.
+
+    Uses xai_sdk for streaming analysis with x_search.
+    Ideal for real-time UI updates.
+
+    Args:
+        bank_name: Institution to analyze
+        callback: Optional callback for each update
+
+    Yields:
+        Dict updates as analysis progresses
+    """
+    try:
+        xai_client = GrokAnalysisClient()
+
+        if not xai_client.is_available():
+            yield {
+                "stage": "error",
+                "error": "xai_sdk not available for streaming"
+            }
+            return
+
+        for update in xai_client.analyze_streaming(bank_name, callback=lambda x: callback({"chunk": x}) if callback else None):
+            yield update
+
+    except Exception as e:
+        yield {
+            "stage": "error",
+            "error": str(e)
+        }
+
+
+def continue_analysis(bank_name: str, follow_up: str) -> str:
+    """
+    Continue a previous analysis session with a follow-up question.
+
+    Uses Responses API to maintain conversation context.
+
+    Args:
+        bank_name: Institution being analyzed
+        follow_up: Follow-up question or additional context
+
+    Returns:
+        JSON string with continued analysis
+    """
+    timestamp = datetime.now(timezone.utc).isoformat()
+
+    try:
+        xai_client = GrokAnalysisClient()
+
+        if not xai_client.is_available():
+            return json.dumps({
+                "status": "error",
+                "error": "xai_sdk not available for session continuation",
+                "timestamp": timestamp
+            }, indent=2)
+
+        session_id = xai_client.get_session_id(bank_name)
+
+        if not session_id:
+            return json.dumps({
+                "status": "error",
+                "error": f"No existing session found for {bank_name}. Run initial analysis first.",
+                "timestamp": timestamp
+            }, indent=2)
+
+        analysis = xai_client.analyze_with_x_search(
+            bank_name,
+            additional_context=follow_up,
+            continue_session=True
+        )
+
+        return json.dumps({
+            "bank_name": bank_name,
+            "status": "success",
+            "timestamp": timestamp,
+            "data_source": "xai_sdk (session continuation)",
+            "previous_session_id": session_id,
+            "new_session_id": analysis.get("session_id"),
+            "follow_up_question": follow_up,
+            "analysis": analysis,
+            "risk_trend": xai_client.get_risk_trend(bank_name)
+        }, indent=2)
+
+    except Exception as e:
+        return json.dumps({
+            "status": "error",
+            "error": str(e),
+            "timestamp": timestamp
+        }, indent=2)
 
 
 # =============================================================================
@@ -1517,6 +1992,286 @@ async def stream_institution_updates(
             callback(update)
         yield update
         await asyncio.sleep(0.1)  # Small delay for UI updates
+
+
+# =============================================================================
+# Real-time Stream Monitor (xdk Filtered Stream)
+# =============================================================================
+
+class StreamMonitor:
+    """
+    Real-time monitoring using xdk filtered stream.
+
+    Features:
+    - Monitors multiple institutions simultaneously
+    - Automatic rule management for filtered stream
+    - Real-time risk detection with instant alerts
+    - Integrates with GrokAnalysisClient for deep analysis
+
+    Usage:
+        monitor = StreamMonitor()
+        monitor.add_institution("Coinbase")
+        monitor.add_institution("Chase")
+
+        async for event in monitor.stream():
+            print(f"New event: {event}")
+    """
+
+    def __init__(self):
+        self.x_client = XAPIClient()
+        self.monitored_institutions: Dict[str, Dict] = {}
+        self.active_rules: List[Dict] = []
+        self.event_buffer: List[Dict] = []
+        self._running = False
+
+    def add_institution(self, institution: str) -> Dict:
+        """
+        Add an institution to monitor.
+
+        Args:
+            institution: Name of the institution to monitor
+
+        Returns:
+            Dict with status and rule details
+        """
+        inst_context = get_institution_context(institution)
+        inst_type = inst_context["institution_type"]
+        risk_keywords = inst_context["risk_keywords"][:6]
+
+        # Build stream rule for this institution
+        keyword_clause = " OR ".join(risk_keywords[:4])
+        rule_value = f'"{institution}" ({keyword_clause})'
+
+        # Store monitored institution
+        self.monitored_institutions[institution.lower()] = {
+            "name": institution,
+            "type": inst_type,
+            "rule_value": rule_value,
+            "risk_keywords": risk_keywords,
+            "added_at": datetime.now(timezone.utc).isoformat()
+        }
+
+        return {
+            "status": "added",
+            "institution": institution,
+            "type": inst_type,
+            "rule": rule_value
+        }
+
+    def remove_institution(self, institution: str) -> Dict:
+        """Remove an institution from monitoring."""
+        inst_key = institution.lower()
+        if inst_key in self.monitored_institutions:
+            del self.monitored_institutions[inst_key]
+            return {"status": "removed", "institution": institution}
+        return {"status": "not_found", "institution": institution}
+
+    def get_monitored_institutions(self) -> List[Dict]:
+        """Get list of currently monitored institutions."""
+        return list(self.monitored_institutions.values())
+
+    def build_stream_rules(self) -> List[Dict]:
+        """Build stream rules for all monitored institutions."""
+        rules = []
+        for inst_key, inst_data in self.monitored_institutions.items():
+            rules.append({
+                "value": inst_data["rule_value"],
+                "tag": f"sentinel_{inst_key}"
+            })
+        return rules
+
+    async def setup_stream(self) -> Dict:
+        """
+        Set up filtered stream rules for monitored institutions.
+
+        Returns:
+            Dict with setup status
+        """
+        rules = self.build_stream_rules()
+
+        if not rules:
+            return {
+                "status": "error",
+                "error": "No institutions to monitor. Add institutions first."
+            }
+
+        try:
+            # Clear existing rules first
+            existing_rules = self.x_client.get_stream_rules()
+            if existing_rules and not existing_rules[0].get("error"):
+                # Delete existing rules (would need delete endpoint)
+                pass
+
+            # Add new rules
+            result = self.x_client.setup_stream_rules(rules)
+            self.active_rules = rules
+
+            return {
+                "status": "success",
+                "rules_created": len(rules),
+                "institutions": list(self.monitored_institutions.keys()),
+                "result": result
+            }
+
+        except Exception as e:
+            return {
+                "status": "error",
+                "error": str(e)
+            }
+
+    async def stream(self) -> Generator[Dict, None, None]:
+        """
+        Stream real-time events from filtered stream.
+
+        Yields:
+            Dict with tweet data and risk indicators
+        """
+        self._running = True
+
+        try:
+            for post in self.x_client.stream_posts():
+                if not self._running:
+                    break
+
+                if post.get("error"):
+                    yield {
+                        "type": "error",
+                        "error": post["error"],
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                    continue
+
+                # Identify which institution this matches
+                matching_institution = None
+                matching_rules = post.get("matching_rules", [])
+
+                for rule in matching_rules:
+                    tag = rule.get("tag", "")
+                    if tag.startswith("sentinel_"):
+                        inst_key = tag.replace("sentinel_", "")
+                        if inst_key in self.monitored_institutions:
+                            matching_institution = self.monitored_institutions[inst_key]
+                            break
+
+                # Quick risk assessment
+                text = post.get("text", "").lower()
+                risk_signals = []
+
+                if matching_institution:
+                    for keyword in matching_institution.get("risk_keywords", []):
+                        if keyword.lower() in text:
+                            risk_signals.append(keyword)
+
+                # Determine urgency
+                urgency = "low"
+                if len(risk_signals) >= 3:
+                    urgency = "high"
+                elif len(risk_signals) >= 1:
+                    urgency = "medium"
+
+                event = {
+                    "type": "tweet",
+                    "id": post.get("id"),
+                    "text": post.get("text"),
+                    "created_at": post.get("created_at"),
+                    "author_id": post.get("author_id"),
+                    "institution": matching_institution.get("name") if matching_institution else "unknown",
+                    "institution_type": matching_institution.get("type") if matching_institution else "unknown",
+                    "risk_signals": risk_signals,
+                    "urgency": urgency,
+                    "matching_rules": matching_rules,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+
+                # Buffer for batch analysis
+                self.event_buffer.append(event)
+
+                yield event
+
+                # If high urgency, trigger immediate analysis
+                if urgency == "high":
+                    yield {
+                        "type": "alert",
+                        "message": f"HIGH URGENCY: {matching_institution.get('name') if matching_institution else 'Unknown'} - {', '.join(risk_signals)}",
+                        "event": event,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+
+        except Exception as e:
+            yield {
+                "type": "error",
+                "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+
+        finally:
+            self._running = False
+
+    def stop(self):
+        """Stop the stream."""
+        self._running = False
+
+    async def analyze_buffered_events(self) -> Dict:
+        """
+        Analyze buffered events with Grok for comprehensive risk assessment.
+
+        Returns:
+            Dict with analysis results
+        """
+        if not self.event_buffer:
+            return {"status": "no_events", "count": 0}
+
+        # Group events by institution
+        by_institution: Dict[str, List[Dict]] = {}
+        for event in self.event_buffer:
+            inst = event.get("institution", "unknown")
+            if inst not in by_institution:
+                by_institution[inst] = []
+            by_institution[inst].append(event)
+
+        results = {}
+        for institution, events in by_institution.items():
+            if institution == "unknown":
+                continue
+
+            # Use GrokAnalysisClient for analysis
+            try:
+                grok_client = GrokAnalysisClient()
+                if grok_client.is_available():
+                    context = f"Analyzing {len(events)} real-time events. Latest signals: {', '.join(events[-1].get('risk_signals', []))}"
+                    analysis = grok_client.analyze_with_x_search(
+                        institution,
+                        additional_context=context
+                    )
+                    results[institution] = analysis
+            except Exception as e:
+                results[institution] = {"error": str(e)}
+
+        # Clear buffer after analysis
+        self.event_buffer = []
+
+        return {
+            "status": "analyzed",
+            "institutions_analyzed": list(results.keys()),
+            "results": results,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+
+def create_stream_monitor(institutions: List[str]) -> StreamMonitor:
+    """
+    Factory function to create a configured StreamMonitor.
+
+    Args:
+        institutions: List of institution names to monitor
+
+    Returns:
+        Configured StreamMonitor instance
+    """
+    monitor = StreamMonitor()
+    for inst in institutions:
+        monitor.add_institution(inst)
+    return monitor
 
 
 # =============================================================================

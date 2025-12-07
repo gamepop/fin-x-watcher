@@ -31,8 +31,13 @@ from tools import (
     send_alert,
     XAPIClient,
     GrokClient,
+    GrokAnalysisClient,
+    StreamMonitor,
+    create_stream_monitor,
     stream_institution_updates,
-    _grok_live_search_analysis
+    _grok_live_search_analysis,
+    continue_analysis,
+    get_institution_context
 )
 
 load_dotenv()
@@ -558,6 +563,245 @@ async def get_institutions():
             ]
         }
     }
+
+
+# =============================================================================
+# Real-time Stream Monitor Endpoints (xdk Filtered Stream)
+# =============================================================================
+
+# Global stream monitor instance
+_stream_monitor: Optional[StreamMonitor] = None
+
+
+class MonitorRequest(BaseModel):
+    """Request model for monitor endpoints."""
+    institutions: List[str]
+
+
+class ContinueAnalysisRequest(BaseModel):
+    """Request for continuing analysis session."""
+    institution: str
+    follow_up: str
+
+
+@app.post("/monitor/start")
+async def start_monitor(request: MonitorRequest):
+    """
+    Start real-time monitoring for multiple institutions.
+
+    Sets up filtered stream rules and begins monitoring.
+
+    Args:
+        institutions: List of institution names to monitor
+
+    Returns:
+        Status of monitor setup
+    """
+    global _stream_monitor
+
+    try:
+        _stream_monitor = create_stream_monitor(request.institutions)
+        setup_result = await _stream_monitor.setup_stream()
+
+        return {
+            "status": "started",
+            "institutions": request.institutions,
+            "rules_setup": setup_result,
+            "stream_endpoint": "/monitor/stream",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+
+@app.get("/monitor/stream")
+async def stream_monitor_events():
+    """
+    Stream real-time events from the monitor via SSE.
+
+    Returns Server-Sent Events for real-time monitoring:
+    - tweet: New matching tweet detected
+    - alert: High urgency event requiring attention
+    - error: Stream error
+
+    Usage:
+    ```javascript
+    const eventSource = new EventSource('/monitor/stream');
+
+    eventSource.addEventListener('tweet', (e) => {
+        const data = JSON.parse(e.data);
+        console.log(`New tweet for ${data.institution}: ${data.text}`);
+    });
+
+    eventSource.addEventListener('alert', (e) => {
+        const alert = JSON.parse(e.data);
+        console.log(`ALERT: ${alert.message}`);
+    });
+    ```
+    """
+    global _stream_monitor
+
+    if not _stream_monitor:
+        async def error_stream():
+            yield f"event: error\ndata: {json.dumps({'error': 'Monitor not started. Call POST /monitor/start first.'})}\n\n"
+
+        return StreamingResponse(
+            error_stream(),
+            media_type="text/event-stream"
+        )
+
+    async def generate_stream():
+        async for event in _stream_monitor.stream():
+            event_type = event.get("type", "message")
+            yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+@app.post("/monitor/stop")
+async def stop_monitor():
+    """Stop the real-time monitor."""
+    global _stream_monitor
+
+    if _stream_monitor:
+        _stream_monitor.stop()
+        institutions = list(_stream_monitor.monitored_institutions.keys())
+        _stream_monitor = None
+        return {
+            "status": "stopped",
+            "institutions_stopped": institutions,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+    return {
+        "status": "not_running",
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+
+@app.get("/monitor/status")
+async def get_monitor_status():
+    """Get current monitor status."""
+    global _stream_monitor
+
+    if not _stream_monitor:
+        return {
+            "status": "not_running",
+            "institutions": [],
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+    return {
+        "status": "running",
+        "institutions": _stream_monitor.get_monitored_institutions(),
+        "active_rules": _stream_monitor.active_rules,
+        "buffered_events": len(_stream_monitor.event_buffer),
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+
+@app.post("/monitor/add")
+async def add_institution_to_monitor(request: AnalysisRequest):
+    """Add an institution to the active monitor."""
+    global _stream_monitor
+
+    if not _stream_monitor:
+        return {
+            "status": "error",
+            "error": "Monitor not started. Call POST /monitor/start first."
+        }
+
+    result = _stream_monitor.add_institution(request.institution)
+    return result
+
+
+@app.post("/monitor/analyze-buffer")
+async def analyze_buffered_events():
+    """Analyze buffered events from the stream."""
+    global _stream_monitor
+
+    if not _stream_monitor:
+        return {
+            "status": "error",
+            "error": "Monitor not started"
+        }
+
+    result = await _stream_monitor.analyze_buffered_events()
+    return result
+
+
+# =============================================================================
+# Session Continuation Endpoints (Responses API)
+# =============================================================================
+
+@app.post("/analyze/continue")
+async def continue_institution_analysis(request: ContinueAnalysisRequest):
+    """
+    Continue a previous analysis session with a follow-up question.
+
+    Uses xai_sdk Responses API for stateful conversation.
+
+    Args:
+        institution: Institution being analyzed
+        follow_up: Follow-up question or context
+
+    Returns:
+        Continued analysis with session context
+    """
+    try:
+        result = continue_analysis(request.institution, request.follow_up)
+        return JSONResponse(content=json.loads(result))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/analyze/trend/{institution}")
+async def get_risk_trend(institution: str):
+    """
+    Get risk trend for an institution based on analysis history.
+
+    Returns trend data showing if risk is escalating, improving, or stable.
+    """
+    try:
+        grok_client = GrokAnalysisClient()
+        if grok_client.is_available():
+            trend = grok_client.get_risk_trend(institution)
+            return trend
+        return {"error": "xai_sdk not available for trend tracking"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/institution/{name}/context")
+async def get_institution_type_context(name: str):
+    """
+    Get institution type and risk context.
+
+    Returns the classification, risk keywords, and analysis prompt section.
+    """
+    try:
+        context = get_institution_context(name)
+        return {
+            "institution": name,
+            "type": context["institution_type"],
+            "risk_keywords": context["risk_keywords"],
+            "prompt_section_preview": context["prompt_section"][:200] + "..."
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # =============================================================================
