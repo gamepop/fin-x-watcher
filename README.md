@@ -2,8 +2,9 @@
 
 **Real-time financial institution risk monitoring powered by X API and Grok AI**
 
----
+![Financial Sentinel](docs/images/image.png)
 
+---
 
 ## Overview
 
