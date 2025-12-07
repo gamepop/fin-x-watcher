@@ -696,7 +696,6 @@ def _grok_relevance_filter(tweets: List[Dict], institutions: List[str]) -> List[
         if checks >= GROK_MAX_CHECKS:
             kept.append(t)
             continue
-        checks += 1  # count every processed tweet for cost control
         text = t.get("text") or ""
         if not text.strip():
             kept.append(t)  # keep empty-text tweets without Grok call
@@ -731,7 +730,7 @@ def _grok_relevance_filter(tweets: List[Dict], institutions: List[str]) -> List[
         except Exception:
             # On Grok error, keep original tweet to avoid losing data
             kept.append(t)
-        checks += 1
+        checks += 1  # count after processing attempt (one per tweet)
 
     return kept
 
