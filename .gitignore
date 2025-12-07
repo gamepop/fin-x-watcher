@@ -18,6 +18,13 @@ build/
 # Logs
 *.log
 sentinel.log
+backend.log
+frontend.log
+
+# Process IDs
+*.pid
+backend.pid
+frontend.pid
 
 # IDEs
 .vscode/
