@@ -1346,10 +1346,11 @@ export default function Home() {
 
         {/* Chat Interface - Results now appear inline in chat */}
         <main
-          className="flex-1 min-h-0 overflow-y-auto relative flex flex-col"
+          className="flex-1 relative flex flex-col"
           style={{
-            marginRight: showLivePanel ? '380px' : '0',
-            transition: 'margin-right 0.3s ease',
+            height: 'calc(100vh - 96px)', // header + top padding ~96px
+            overflowY: 'auto',
+            paddingRight: '400px', // keep center width static even if live pane is hidden
           }}
         >
           {/* Dashboard Overview */}
@@ -1438,14 +1439,16 @@ export default function Home() {
         </main>
 
         {/* Live Stream Feed - Right Side (Always Visible) */}
-        <LiveStreamFeed
-          events={liveStreamEvents}
-          isActive={liveStreamActive}
-          stats={liveStreamStats}
-          selectedInstitutions={selectedInstitutions}
-          onClear={() => setLiveStreamEvents([])}
-          onClose={() => setShowLivePanel(false)}
-        />
+        {showLivePanel && (
+          <LiveStreamFeed
+            events={liveStreamEvents}
+            isActive={liveStreamActive}
+            stats={liveStreamStats}
+            selectedInstitutions={selectedInstitutions}
+            onClear={() => setLiveStreamEvents([])}
+            onClose={() => setShowLivePanel(false)}
+          />
+        )}
 
         {/* Side Panel - Chat Assistant */}
         <SidePanel
