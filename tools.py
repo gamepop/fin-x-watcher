@@ -328,7 +328,7 @@ class XAPIClient:
 
     # -------------------------------------------------------------------------
     # Endpoint 2: Tweet Volume/Counts (Trend Detection)
-    # Note: xdk may not support counts endpoint, using fallback
+    # Uses X API v2 REST endpoint directly for accurate velocity calculation
     # -------------------------------------------------------------------------
 
     @with_retry(max_attempts=3, exceptions=(Exception,))
@@ -339,49 +339,95 @@ class XAPIClient:
         hours_back: int = 24
     ) -> Dict[str, Any]:
         """
-        Get tweet volume over time for trend detection.
+        Get tweet volume over time for trend detection using X API v2 counts endpoint.
 
-        Note: Falls back to counting search results if counts endpoint unavailable.
+        Uses direct REST API call to /tweets/counts/recent for accurate velocity calculation.
 
         Args:
             query: Search query
             granularity: "minute", "hour", or "day"
-            hours_back: How far back to count
+            hours_back: How far back to count (max 168 hours / 7 days)
 
         Returns:
-            Volume data with trend analysis
+            Volume data with trend analysis including velocity_change_percent
         """
         try:
-            # Try to use search results to estimate volume
-            # xdk auto-pagination makes this efficient
-            tweet_count = 0
-            for page in self.client.posts.search_recent(
-                query=f"{query} -is:retweet lang:en",
-                max_results=100
-            ):
-                page_data = page.model_dump() if hasattr(page, 'model_dump') else dict(page)
-                if page_data.get('data'):
-                    tweet_count += len(page_data['data'])
-                if tweet_count >= 100:  # Sample limit
-                    break
+            import requests
+            from datetime import datetime, timedelta, timezone
 
+            # X API v2 counts endpoint
+            url = "https://api.x.com/2/tweets/counts/recent"
+
+            # Calculate time window
+            now = datetime.now(timezone.utc)
+            start_time = (now - timedelta(hours=min(hours_back, 168))).isoformat()
+
+            headers = {
+                "Authorization": f"Bearer {self.bearer_token}"
+            }
+
+            params = {
+                "query": f"{query} -is:retweet lang:en",
+                "granularity": granularity,
+                "start_time": start_time
+            }
+
+            response = requests.get(url, headers=headers, params=params, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+
+            # Extract time series data
+            if data.get('data') and len(data['data']) >= 2:
+                time_series = data['data']
+                total_count = data.get('meta', {}).get('total_tweet_count', 0)
+
+                # Calculate velocity: compare recent half vs older half
+                midpoint = len(time_series) // 2
+                recent_volume = sum(bucket.get('tweet_count', 0) for bucket in time_series[midpoint:])
+                older_volume = sum(bucket.get('tweet_count', 0) for bucket in time_series[:midpoint])
+
+                # Calculate velocity percentage
+                if older_volume > 0:
+                    velocity = ((recent_volume - older_volume) / older_volume) * 100
+                else:
+                    velocity = 100 if recent_volume > 0 else 0
+
+                # Spike detection: >50% increase
+                is_spiking = velocity > 50
+
+                return {
+                    "total_count": total_count,
+                    "time_series": time_series,
+                    "velocity_change_percent": round(velocity, 1),
+                    "is_spiking": is_spiking,
+                    "recent_volume": recent_volume,
+                    "older_volume": older_volume,
+                    "granularity": granularity,
+                    "hours_analyzed": hours_back,
+                    "data_points": len(time_series)
+                }
+
+            # Insufficient data - fallback
             return {
-                "total_count": tweet_count,
-                "time_series": [],
+                "total_count": data.get('meta', {}).get('total_tweet_count', 0),
+                "time_series": data.get('data', []),
                 "velocity_change_percent": 0,
-                "is_spiking": tweet_count > 50,  # Simple spike detection
+                "is_spiking": data.get('meta', {}).get('total_tweet_count', 0) > 50,
                 "granularity": granularity,
                 "hours_analyzed": hours_back,
-                "note": "Estimated from search results (xdk)"
+                "note": "Insufficient data for velocity calculation"
             }
 
         except Exception as e:
+            # Network error or API failure - return safe defaults
             return {
                 "total_count": 0,
                 "time_series": [],
                 "velocity_change_percent": 0,
                 "is_spiking": False,
-                "error": str(e)
+                "error": str(e),
+                "granularity": granularity,
+                "hours_analyzed": hours_back
             }
 
     # -------------------------------------------------------------------------

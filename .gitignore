@@ -50,3 +50,7 @@ htmlcov/
 
 # Claude
 .claude/
+
+# Mobile App (excluded from version control)
+mobile-app/
+mobile/
