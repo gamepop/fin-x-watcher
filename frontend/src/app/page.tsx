@@ -1348,7 +1348,7 @@ export default function Home() {
         <main
           className="flex-1 relative flex flex-col"
           style={{
-            height: 'calc(100vh - 96px)', // header + top padding ~96px
+            height: 'calc(100vh - 64px)', // align with header height to remove top gap
             overflowY: 'auto',
             paddingRight: '400px', // keep center width static even if live pane is hidden
           }}
