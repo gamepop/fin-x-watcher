@@ -679,7 +679,7 @@ export default function Home() {
     setLiveStreamError(null);
     setLiveStreamActive(true);
     setShowLivePanel(true);
-    setIsMonitoring(true); // ensure scheduled Quick Analysis continues during streaming
+    // Do NOT toggle scheduled monitoring here; live stream should be independent
 
     // Attempt filtered stream (SSE). If it fails, fall back to polling.
     try {
