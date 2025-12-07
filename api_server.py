@@ -51,11 +51,14 @@ class AnalysisRequest(BaseModel):
     """Request model for analysis endpoints."""
     institution: str
     include_trend_data: bool = True
+    hours_back: int = 24  # Time period to analyze (max 168 hours / 7 days)
+    use_stateful: bool = True  # Use xai_sdk Responses API for session continuity
 
 
 class BatchAnalysisRequest(BaseModel):
     """Request model for batch analysis."""
     institutions: List[str]
+    hours_back: int = 24
 
 
 class StreamEvent(BaseModel):
@@ -698,11 +701,20 @@ async def stream_monitor_events():
                         timeout=heartbeat_interval
                     )
 
-                    # Process the event
+                    # Process the event based on type
+                    event_type = event.get("type", "tweet")
+
                     if event.get("error"):
                         yield f"event: error\ndata: {json.dumps(event)}\n\n"
+                    elif event_type == "alert":
+                        # High-urgency or high-engagement alert with Grok analysis
+                        yield f"event: alert\ndata: {json.dumps(event)}\n\n"
+                    elif event_type == "volume_spike":
+                        # Volume spike detected
+                        yield f"event: spike\ndata: {json.dumps(event)}\n\n"
                     else:
-                        # Enrich with matched institution
+                        # Regular tweet event
+                        _stream_monitor._tweets_processed += 1
                         event["type"] = "tweet"
                         yield f"event: tweet\ndata: {json.dumps(event)}\n\n"
 
@@ -924,6 +936,52 @@ async def get_risk_trend(institution: str):
             trend = grok_client.get_risk_trend(institution)
             return trend
         return {"error": "xai_sdk not available for trend tracking"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/analyze/mode/{institution}")
+async def get_analysis_mode(institution: str):
+    """
+    Get current analysis mode and session info for an institution.
+
+    Returns:
+        - mode: "stateful" (xai_sdk Responses API) or "direct" (X API + Grok)
+        - session_id: Current session ID if available
+        - session_active: Whether a session exists
+        - features: Available features for current mode
+    """
+    try:
+        grok_client = GrokAnalysisClient()
+        is_stateful = grok_client.is_available()
+
+        response = {
+            "institution": institution,
+            "mode": "stateful" if is_stateful else "direct",
+            "xai_sdk_available": is_stateful,
+            "features": {}
+        }
+
+        if is_stateful:
+            session_id = grok_client.get_session_id(institution)
+            response["session_id"] = session_id
+            response["session_active"] = session_id is not None
+            response["features"] = {
+                "delta_updates": True,
+                "session_continuity": True,
+                "server_side_search": True,
+                "30_day_retention": True
+            }
+        else:
+            response["session_id"] = None
+            response["session_active"] = False
+            response["features"] = {
+                "delta_updates": False,
+                "full_search_only": True,
+                "direct_x_api": True
+            }
+
+        return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
