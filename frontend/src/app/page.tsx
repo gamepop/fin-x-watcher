@@ -1205,69 +1205,126 @@ export default function Home() {
             )}
           </div>
 
-          {/* Quick Actions - Beautifully Styled */}
+          {/* Quick Actions - All buttons grouped at bottom */}
           {selectedInstitutions.length > 0 && (
-            <div className="mt-6 space-y-3">
-              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3 px-1">
-                Quick Actions
-              </div>
-              
-              {/* Live Stream Button - Primary Action */}
-              <button
-                onClick={() => liveStreamActive ? stopLiveStream() : startLiveStream()}
-                className={`w-full group relative overflow-hidden ${
-                  liveStreamActive
-                    ? 'bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 shadow-lg shadow-red-500/30'
-                    : 'bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 shadow-lg shadow-emerald-500/30'
-                } text-white text-sm font-semibold py-3 px-4 rounded-xl transition-all duration-300 flex items-center justify-center gap-2.5 transform hover:scale-[1.02] active:scale-[0.98]`}
-              >
-                {liveStreamActive ? (
-                  <>
-                    <svg className="w-5 h-5 group-hover:rotate-90 transition-transform duration-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
-                    </svg>
-                    <span>Stop Live Stream</span>
-                  </>
-                ) : (
-                  <>
-                    <div className="relative">
-                      <span className="w-3 h-3 rounded-full bg-white animate-pulse absolute"></span>
-                      <span className="w-3 h-3 rounded-full bg-white/50 animate-ping absolute"></span>
-                    </div>
-                    <span>Start Live Stream</span>
-                  </>
-                )}
-              </button>
+            <div className="mt-auto pt-4">
+              <div className="relative overflow-hidden rounded-3xl border border-slate-700/50 bg-gradient-to-br from-slate-900/95 via-slate-800/90 to-slate-900/95 shadow-2xl shadow-black/40 backdrop-blur-2xl">
+                {/* Animated background glow effects */}
+                <div className="absolute inset-0 pointer-events-none">
+                  <div className="absolute -left-12 top-0 h-32 w-32 rounded-full bg-emerald-500/15 blur-3xl animate-pulse" />
+                  <div className="absolute right-0 -bottom-8 h-28 w-36 rounded-full bg-indigo-500/15 blur-3xl animate-pulse" style={{ animationDelay: '1s' }} />
+                  <div className="absolute left-1/2 top-1/2 h-24 w-24 rounded-full bg-purple-500/10 blur-2xl animate-pulse" style={{ animationDelay: '2s' }} />
+                </div>
 
-              {/* Quick Analysis Button */}
-              <button
-                onClick={handleQuickAnalysis}
-                disabled={isStreaming || selectedInstitutions.length === 0}
-                className={`w-full group relative overflow-hidden ${
-                  (isStreaming || selectedInstitutions.length === 0)
-                    ? 'bg-slate-700/50 cursor-not-allowed opacity-50'
-                    : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-lg shadow-blue-500/30'
-                } text-white text-sm font-semibold py-3 px-4 rounded-xl transition-all duration-300 flex items-center justify-center gap-2.5 transform hover:scale-[1.02] active:scale-[0.98]`}
-              >
-                {isStreaming ? (
-                  <>
-                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                    <span>Analyzing...</span>
-                  </>
-                ) : (
-                  <>
-                    <svg className="w-5 h-5 group-hover:rotate-12 transition-transform duration-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                    </svg>
-                    <span>Quick Analysis</span>
-                  </>
-                )}
-              </button>
+                {/* Subtle grid pattern overlay */}
+                <div className="absolute inset-0 opacity-[0.02] pointer-events-none" style={{
+                  backgroundImage: 'linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px)',
+                  backgroundSize: '20px 20px'
+                }} />
+
+                <div className="relative p-5 space-y-3.5">
+                  {/* Header Section */}
+                  <div className="flex items-start justify-between gap-3 mb-1">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className="w-1 h-4 rounded-full bg-gradient-to-b from-emerald-400 to-teal-500"></div>
+                        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.3em]">
+                          Quick Actions
+                        </div>
+                      </div>
+                      <div className="text-[11px] text-slate-400/80 ml-3 leading-relaxed">
+                        Fast controls for selected institutions
+                      </div>
+                    </div>
+                    <span className="px-2.5 py-1 rounded-full text-[10px] font-semibold bg-gradient-to-r from-slate-800/90 to-slate-700/90 border border-slate-600/50 text-slate-200 shadow-lg backdrop-blur-sm">
+                      {selectedInstitutions.length}
+                    </span>
+                  </div>
+
+                  {/* Live Stream Button - Primary Action */}
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={() => liveStreamActive ? stopLiveStream() : startLiveStream()}
+                    className={`w-full group relative overflow-hidden rounded-2xl border-2 ${
+                      liveStreamActive
+                        ? 'border-red-500/30 bg-gradient-to-br from-red-600/90 via-rose-600/90 to-red-700/90 shadow-xl shadow-red-500/20'
+                        : 'border-emerald-500/30 bg-gradient-to-br from-emerald-500/90 via-teal-500/90 to-emerald-600/90 shadow-xl shadow-emerald-500/20'
+                    } px-5 py-3.5 text-xs font-bold text-white transition-all duration-300 flex items-center justify-center gap-2.5`}
+                  >
+                    {/* Shimmer effect on hover */}
+                    <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 bg-gradient-to-r from-transparent via-white/20 to-transparent transform -skew-x-12 translate-x-[-200%] group-hover:translate-x-[200%]"></div>
+                    
+                    {/* Glow effect */}
+                    <div className={`absolute inset-0 opacity-0 group-hover:opacity-50 transition-opacity blur-xl ${
+                      liveStreamActive ? 'bg-red-400' : 'bg-emerald-400'
+                    }`}></div>
+                    
+                    {liveStreamActive ? (
+                      <>
+                        <svg className="w-4.5 h-4.5 group-hover:rotate-90 transition-transform duration-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+                        </svg>
+                        <span className="relative z-10">Stop Live Stream</span>
+                      </>
+                    ) : (
+                      <>
+                        <div className="relative z-10 flex items-center justify-center">
+                          <motion.span 
+                            className="absolute w-2.5 h-2.5 rounded-full bg-white"
+                            animate={{ scale: [1, 1.3, 1], opacity: [1, 0.5, 1] }}
+                            transition={{ duration: 1.5, repeat: Infinity }}
+                          />
+                          <motion.span 
+                            className="absolute w-2.5 h-2.5 rounded-full bg-white/60"
+                            animate={{ scale: [1, 1.8, 1], opacity: [0.6, 0, 0.6] }}
+                            transition={{ duration: 1.5, repeat: Infinity }}
+                          />
+                        </div>
+                        <span className="relative z-10">Start Live Stream</span>
+                      </>
+                    )}
+                  </motion.button>
+
+                  {/* Quick Analysis Button */}
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={handleQuickAnalysis}
+                    disabled={isStreaming || selectedInstitutions.length === 0}
+                    className={`w-full group relative overflow-hidden rounded-2xl border-2 ${
+                      (isStreaming || selectedInstitutions.length === 0)
+                        ? 'border-slate-600/30 bg-slate-700/40 cursor-not-allowed opacity-60'
+                        : 'border-blue-500/30 bg-gradient-to-br from-blue-600/90 via-indigo-600/90 to-violet-600/90 shadow-xl shadow-blue-500/20'
+                    } px-5 py-3.5 text-xs font-bold text-white transition-all duration-300 flex items-center justify-center gap-2.5`}
+                  >
+                    {!(isStreaming || selectedInstitutions.length === 0) && (
+                      <>
+                        <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 bg-gradient-to-r from-transparent via-white/20 to-transparent transform -skew-x-12 translate-x-[-200%] group-hover:translate-x-[200%]"></div>
+                        <div className="absolute inset-0 opacity-0 group-hover:opacity-50 transition-opacity blur-xl bg-blue-400"></div>
+                      </>
+                    )}
+                    {isStreaming ? (
+                      <>
+                        <div className="w-4.5 h-4.5 border-2.5 border-white border-t-transparent rounded-full animate-spin"></div>
+                        <span className="relative z-10">Analyzing...</span>
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-4.5 h-4.5 group-hover:rotate-12 group-hover:scale-110 transition-all duration-300 relative z-10" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                        <span className="relative z-10">Quick Analysis</span>
+                      </>
+                    )}
+                  </motion.button>
 
               {/* Continue Analysis - Delta Updates */}
               {analysisMode?.session_active && (
-              <button
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
                   onClick={async () => {
                     if (selectedInstitutions.length === 0 || isStreaming) return;
 
@@ -1306,48 +1363,92 @@ export default function Home() {
                     }
                   }}
                   disabled={isStreaming}
-                  className={`w-full group relative overflow-hidden ${
+                  className={`w-full group relative overflow-hidden rounded-xl border-2 ${
                     isStreaming
-                      ? 'bg-slate-700/50 cursor-not-allowed opacity-50'
-                      : 'bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 shadow-lg shadow-purple-500/30'
-                  } text-white text-sm font-semibold py-3 px-4 rounded-xl transition-all duration-300 flex items-center justify-center gap-2.5 transform hover:scale-[1.02] active:scale-[0.98]`}
+                      ? 'border-slate-600/30 bg-slate-700/40 cursor-not-allowed opacity-50'
+                      : 'border-purple-500/30 bg-gradient-to-br from-purple-600/90 via-pink-600/90 to-purple-700/90 shadow-xl shadow-purple-500/20'
+                  } text-white text-xs font-bold py-3 px-4 transition-all duration-300 flex items-center justify-center gap-2.5`}
                 >
+                  {!isStreaming && (
+                    <>
+                      <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 bg-gradient-to-r from-transparent via-white/20 to-transparent transform -skew-x-12 translate-x-[-200%] group-hover:translate-x-[200%]"></div>
+                      <div className="absolute inset-0 opacity-0 group-hover:opacity-50 transition-opacity blur-xl bg-purple-400"></div>
+                    </>
+                  )}
                   {isStreaming ? (
                     <>
-                      <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                      <span>Getting updates...</span>
+                      <div className="w-4.5 h-4.5 border-2.5 border-white border-t-transparent rounded-full animate-spin relative z-10"></div>
+                      <span className="relative z-10">Getting updates...</span>
                     </>
                   ) : (
                     <>
-                      <svg className="w-5 h-5 group-hover:rotate-180 transition-transform duration-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      <svg className="w-4.5 h-4.5 group-hover:rotate-180 transition-transform duration-500 relative z-10" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                       </svg>
-                      <span>Continue Analysis</span>
+                      <span className="relative z-10">Continue Analysis</span>
                     </>
                   )}
-              </button>
+                </motion.button>
               )}
+
+              {/* Clear All and Chat Buttons - Shared Row */}
+              <div className="grid grid-cols-2 gap-2.5">
+                {/* Clear All Button */}
+                <motion.button
+                  whileHover={{ scale: 1.01 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={() => {
+                    setSelectedInstitutions([]);
+                    setLiveResults({});
+                    setStreamingResults([]);
+                    setLiveStreamEvents([]);
+                    toast.info("Cleared all selections and results");
+                  }}
+                  className="group relative overflow-hidden rounded-xl border border-slate-600/40 bg-gradient-to-br from-slate-800/80 to-slate-700/80 hover:from-slate-700/90 hover:to-slate-600/90 text-slate-300 hover:text-white text-xs font-semibold py-2.5 px-3 transition-all duration-300 flex items-center justify-center gap-1.5 shadow-lg backdrop-blur-sm"
+                >
+                  <svg className="w-3.5 h-3.5 group-hover:rotate-90 transition-transform duration-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                  <span>Clear All</span>
+                </motion.button>
+
+                {/* Chat Button */}
+                <motion.button
+                  whileHover={{ scale: 1.01 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={() => setShowSidePanel(!showSidePanel)}
+                  className={`group relative overflow-hidden rounded-xl border-2 ${
+                    showSidePanel
+                      ? 'border-blue-500/40 bg-gradient-to-br from-blue-600/90 via-blue-700/90 to-indigo-700/90 shadow-xl shadow-blue-500/20'
+                      : 'border-purple-500/40 bg-gradient-to-br from-pink-500/90 via-purple-600/90 to-indigo-600/90 shadow-xl shadow-purple-500/20'
+                  } text-white text-xs font-semibold py-2.5 px-3 transition-all duration-300 flex items-center justify-center gap-1.5`}
+                  title={showSidePanel ? "Close Chat" : "Open Chat Assistant"}
+                >
+                  {/* Shimmer effect */}
+                  <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 bg-gradient-to-r from-transparent via-white/20 to-transparent transform -skew-x-12 translate-x-[-200%] group-hover:translate-x-[200%]"></div>
+                  
+                  {/* Glow effect */}
+                  <div className={`absolute inset-0 opacity-0 group-hover:opacity-50 transition-opacity blur-xl ${
+                    showSidePanel ? 'bg-blue-400' : 'bg-purple-400'
+                  }`}></div>
+                  
+                  <svg className={`w-3.5 h-3.5 relative z-10 transition-transform duration-500 ${showSidePanel ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                  </svg>
+                  <span className="relative z-10 font-bold">Chat</span>
+                  {showSidePanel && (
+                    <motion.span 
+                      className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-gradient-to-br from-emerald-400 to-green-500 rounded-full border border-white shadow-lg relative z-10"
+                      animate={{ scale: [1, 1.2, 1] }}
+                      transition={{ duration: 2, repeat: Infinity }}
+                    />
+                  )}
+                </motion.button>
+              </div>
+                </div>
+              </div>
             </div>
           )}
-
-          {/* Clear Button - Bottom Section */}
-          <div className="mt-auto pt-6 border-t border-slate-700/50">
-              <button
-                onClick={() => {
-                  setSelectedInstitutions([]);
-                  setLiveResults({});
-                setStreamingResults([]);
-                setLiveStreamEvents([]);
-                toast.info("Cleared all selections and results");
-                }}
-              className="w-full group bg-slate-800/60 hover:bg-slate-700/80 border border-slate-600/50 hover:border-slate-500 text-slate-300 hover:text-white text-sm font-medium py-2.5 px-4 rounded-xl transition-all duration-300 flex items-center justify-center gap-2.5 transform hover:scale-[1.02] active:scale-[0.98]"
-              >
-              <svg className="w-4 h-4 group-hover:rotate-90 transition-transform duration-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
-              </svg>
-              <span>Clear All</span>
-              </button>
-            </div>
         </div>
       </aside>
 
@@ -1682,26 +1783,6 @@ Be concise. Cite your data source (X API + Grok) and include tweet URLs for trac
         </div>
       )}
 
-      {/* Floating Chat Button - Bottom Left */}
-      <button
-        onClick={() => setShowSidePanel(!showSidePanel)}
-        className={`fixed bottom-6 left-6 z-50 group flex items-center justify-center gap-2.5 px-5 py-3.5 rounded-full shadow-2xl transition-all duration-300 transform hover:scale-110 active:scale-95 ${
-          showSidePanel
-            ? "bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 shadow-blue-500/50"
-            : "bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 hover:from-blue-700 hover:via-purple-700 hover:to-pink-700 shadow-purple-500/50"
-        } text-white`}
-        title={showSidePanel ? "Close Chat" : "Open Chat Assistant"}
-      >
-        <svg className={`w-5 h-5 transition-transform duration-300 ${showSidePanel ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-        </svg>
-        <span className="font-semibold text-sm hidden sm:inline">
-          {showSidePanel ? "Close" : "Chat"}
-        </span>
-        {showSidePanel && (
-          <span className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-green-400 rounded-full animate-pulse border-2 border-white shadow-lg"></span>
-        )}
-      </button>
     </div>
   );
 }
