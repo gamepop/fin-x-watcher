@@ -110,10 +110,11 @@ export default function AnalysisResultsView({
         {results.map((result, index) => {
           const colors = riskColors[result.riskLevel] || riskColors.LOW;
           const isExpanded = expandedCards.has(result.institution);
+          const cardKey = `${result.institution}-${index}`;
 
           return (
             <motion.div
-              key={result.institution}
+              key={cardKey}
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: index * 0.1 }}
