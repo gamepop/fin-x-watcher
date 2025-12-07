@@ -52,6 +52,163 @@ interface AnalysisStage {
   analysis?: any;
 }
 
+// Streaming result type for chat history
+interface StreamingResult {
+  id: string;
+  institution: string;
+  analysis: any;
+  timestamp: Date;
+}
+
+// Reusable Risk Analysis Card Component - matches the agent's display_risk_analysis render
+function RiskAnalysisCard({
+  bankName,
+  riskLevel,
+  summary,
+  keyFindings,
+  tweetCount,
+  viralScore,
+  trendVelocity,
+  evidenceTweets,
+  confidence,
+  timestamp,
+  isStreaming = false
+}: {
+  bankName: string;
+  riskLevel: string;
+  summary: string;
+  keyFindings?: string[];
+  tweetCount?: number;
+  viralScore?: number;
+  trendVelocity?: number;
+  evidenceTweets?: { author: string; verified?: boolean; engagement?: string; text: string; url?: string }[];
+  confidence?: number;
+  timestamp?: Date;
+  isStreaming?: boolean;
+}) {
+  const riskColors: Record<string, { bg: string; border: string; text: string; badge: string; glow: string }> = {
+    HIGH: { bg: "bg-red-100", border: "border-red-500", text: "text-red-700", badge: "bg-red-500", glow: "shadow-red-500/30" },
+    MEDIUM: { bg: "bg-yellow-100", border: "border-yellow-500", text: "text-yellow-700", badge: "bg-yellow-500", glow: "shadow-yellow-500/30" },
+    LOW: { bg: "bg-green-100", border: "border-green-500", text: "text-green-700", badge: "bg-green-500", glow: "shadow-green-500/30" },
+  };
+  const colors = riskColors[riskLevel] || riskColors.LOW;
+
+  return (
+    <div className={`rounded-lg border-2 ${colors.border} ${colors.bg} p-4 my-3 shadow-lg ${colors.glow}`}>
+      {/* Header */}
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          {isStreaming && (
+            <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
+          )}
+          <h3 className="text-lg font-bold text-gray-900">{bankName}</h3>
+        </div>
+        <div className="flex items-center gap-2">
+          {viralScore !== undefined && (
+            <span className="text-xs bg-purple-100 text-purple-700 px-2 py-1 rounded-full">
+              Viral: {viralScore}/100
+            </span>
+          )}
+          <span className={`${colors.badge} text-white text-xs font-bold px-3 py-1 rounded-full ${riskLevel === 'HIGH' ? 'animate-pulse' : ''}`}>
+            {riskLevel}
+          </span>
+        </div>
+      </div>
+
+      {/* Summary */}
+      <p className={`${colors.text} text-sm mb-3 font-medium`}>{summary}</p>
+
+      {/* Metrics Row */}
+      <div className="flex flex-wrap gap-3 mb-3 text-xs">
+        {tweetCount !== undefined && tweetCount > 0 && (
+          <div className="bg-white/60 px-3 py-1.5 rounded-lg">
+            <span className="text-gray-500">Tweets:</span>{" "}
+            <span className="font-semibold text-gray-800">{tweetCount}</span>
+          </div>
+        )}
+        {trendVelocity !== undefined && (
+          <div className="bg-white/60 px-3 py-1.5 rounded-lg">
+            <span className="text-gray-500">Trend:</span>{" "}
+            <span className={`font-semibold ${trendVelocity > 0 ? 'text-red-600' : 'text-green-600'}`}>
+              {trendVelocity > 0 ? '+' : ''}{trendVelocity?.toFixed(1)}%
+            </span>
+          </div>
+        )}
+        {confidence !== undefined && (
+          <div className="bg-white/60 px-3 py-1.5 rounded-lg">
+            <span className="text-gray-500">Confidence:</span>{" "}
+            <span className="font-semibold text-gray-800">{(confidence * 100).toFixed(0)}%</span>
+          </div>
+        )}
+      </div>
+
+      {/* Key Findings */}
+      {keyFindings && keyFindings.length > 0 && (
+        <div className="mb-3">
+          <h4 className="text-xs font-semibold text-gray-600 uppercase mb-1">Key Findings</h4>
+          <ul className="text-sm text-gray-700 space-y-1">
+            {keyFindings.slice(0, 4).map((finding: string, idx: number) => (
+              <li key={idx} className="flex items-start gap-2">
+                <span className="text-gray-400">-</span>
+                <span>{finding}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Evidence Tweets */}
+      {evidenceTweets && evidenceTweets.length > 0 && (
+        <div className="mb-3">
+          <h4 className="text-xs font-semibold text-gray-600 uppercase mb-1">Evidence from X</h4>
+          <div className="space-y-2">
+            {evidenceTweets.slice(0, 2).map((tweet: any, idx: number) => (
+              <div key={idx} className="bg-white/80 rounded p-2 text-xs">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-medium text-gray-800">
+                    {tweet.author}
+                    {tweet.verified && <span className="ml-1 text-blue-500">✓</span>}
+                  </span>
+                  {tweet.engagement && <span className="text-gray-400">{tweet.engagement}</span>}
+                </div>
+                <p className="text-gray-600 line-clamp-2">{tweet.text}</p>
+                {tweet.url && (
+                  <a
+                    href={tweet.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-500 hover:underline mt-1 inline-block"
+                  >
+                    View on X
+                  </a>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Footer */}
+      <div className="text-xs text-gray-500 pt-2 border-t border-gray-200 flex items-center justify-between">
+        <span>Source: X API v2 + Grok Live Search</span>
+        <span className="flex items-center gap-1">
+          {isStreaming ? (
+            <>
+              <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse"></span>
+              Streaming
+            </>
+          ) : (
+            <>
+              <span className="w-2 h-2 rounded-full bg-green-400"></span>
+              {timestamp ? timestamp.toLocaleTimeString() : 'Live data'}
+            </>
+          )}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
   const [selectedInstitutions, setSelectedInstitutions] = useState<string[]>([]);
   const [isMonitoring, setIsMonitoring] = useState(false);
@@ -65,6 +222,9 @@ export default function Home() {
   const [streamStatus, setStreamStatus] = useState<string>("");
   const [liveResults, setLiveResults] = useState<Record<string, any>>({});
 
+  // Streaming results for chat history (renders as cards)
+  const [streamingResults, setStreamingResults] = useState<StreamingResult[]>([]);
+
   // API health status
   const [apiHealth, setApiHealth] = useState<any>(null);
 
@@ -76,7 +236,7 @@ export default function Home() {
       .catch(() => setApiHealth({ status: "offline" }));
   }, []);
 
-  // SSE streaming function
+  // SSE streaming function - results render as cards above chat
   const streamAnalysis = useCallback(async (institution: string) => {
     setIsStreaming(true);
     setStreamingInstitution(institution);
@@ -97,14 +257,28 @@ export default function Home() {
 
       eventSource.addEventListener("result", (event) => {
         const data: AnalysisStage = JSON.parse(event.data);
+        const analysis = data.analysis;
+
+        // Store result for sidebar badge indicators
         setLiveResults(prev => ({
           ...prev,
-          [institution]: data.analysis
+          [institution]: analysis
         }));
         setStreamStatus(`Analysis complete: ${data.risk_level}`);
+
+        // Add result to streaming results for card rendering
+        setStreamingResults(prev => [
+          ...prev,
+          {
+            id: `result-${institution}-${Date.now()}`,
+            institution,
+            analysis,
+            timestamp: new Date()
+          }
+        ]);
       });
 
-      eventSource.addEventListener("done", (event) => {
+      eventSource.addEventListener("done", () => {
         eventSource.close();
         setIsStreaming(false);
         setStreamingInstitution(null);
@@ -130,7 +304,7 @@ export default function Home() {
     }
   }, []);
 
-  // Register enhanced render function for risk analysis
+  // Register enhanced render function for risk analysis - uses shared RiskAnalysisCard component
   useCopilotAction({
     name: "display_risk_analysis",
     description: "Display a comprehensive risk analysis card for a financial institution with enhanced X API data",
@@ -145,113 +319,19 @@ export default function Home() {
       { name: "evidenceTweets", type: "object[]", description: "Top evidence tweets with URLs", required: false },
       { name: "confidence", type: "number", description: "Analysis confidence score", required: false },
     ],
-    render: ({ args }) => {
-      const riskColors: Record<string, { bg: string; border: string; text: string; badge: string; glow: string }> = {
-        HIGH: { bg: "bg-red-100", border: "border-red-500", text: "text-red-700", badge: "bg-red-500", glow: "shadow-red-500/30" },
-        MEDIUM: { bg: "bg-yellow-100", border: "border-yellow-500", text: "text-yellow-700", badge: "bg-yellow-500", glow: "shadow-yellow-500/30" },
-        LOW: { bg: "bg-green-100", border: "border-green-500", text: "text-green-700", badge: "bg-green-500", glow: "shadow-green-500/30" },
-      };
-      const colors = riskColors[args.riskLevel || "LOW"] || riskColors.LOW;
-
-      return (
-        <div className={`rounded-lg border-2 ${colors.border} ${colors.bg} p-4 my-3 shadow-lg ${colors.glow}`}>
-          {/* Header */}
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-lg font-bold text-gray-900">{args.bankName}</h3>
-            <div className="flex items-center gap-2">
-              {args.viralScore !== undefined && (
-                <span className="text-xs bg-purple-100 text-purple-700 px-2 py-1 rounded-full">
-                  Viral: {args.viralScore}/100
-                </span>
-              )}
-              <span className={`${colors.badge} text-white text-xs font-bold px-3 py-1 rounded-full animate-pulse`}>
-                {args.riskLevel}
-              </span>
-            </div>
-          </div>
-
-          {/* Summary */}
-          <p className={`${colors.text} text-sm mb-3 font-medium`}>{args.summary}</p>
-
-          {/* Metrics Row */}
-          <div className="flex flex-wrap gap-3 mb-3 text-xs">
-            <div className="bg-white/60 px-3 py-1.5 rounded-lg">
-              <span className="text-gray-500">Tweets:</span>{" "}
-              <span className="font-semibold text-gray-800">{args.tweetCount || 0}</span>
-            </div>
-            {args.trendVelocity !== undefined && (
-              <div className="bg-white/60 px-3 py-1.5 rounded-lg">
-                <span className="text-gray-500">Trend:</span>{" "}
-                <span className={`font-semibold ${args.trendVelocity > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                  {args.trendVelocity > 0 ? '+' : ''}{args.trendVelocity?.toFixed(1)}%
-                </span>
-              </div>
-            )}
-            {args.confidence !== undefined && (
-              <div className="bg-white/60 px-3 py-1.5 rounded-lg">
-                <span className="text-gray-500">Confidence:</span>{" "}
-                <span className="font-semibold text-gray-800">{(args.confidence * 100).toFixed(0)}%</span>
-              </div>
-            )}
-          </div>
-
-          {/* Key Findings */}
-          {args.keyFindings && args.keyFindings.length > 0 && (
-            <div className="mb-3">
-              <h4 className="text-xs font-semibold text-gray-600 uppercase mb-1">Key Findings</h4>
-              <ul className="text-sm text-gray-700 space-y-1">
-                {args.keyFindings.slice(0, 4).map((finding: string, idx: number) => (
-                  <li key={idx} className="flex items-start gap-2">
-                    <span className="text-gray-400">-</span>
-                    <span>{finding}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {/* Evidence Tweets */}
-          {args.evidenceTweets && args.evidenceTweets.length > 0 && (
-            <div className="mb-3">
-              <h4 className="text-xs font-semibold text-gray-600 uppercase mb-1">Evidence from X</h4>
-              <div className="space-y-2">
-                {args.evidenceTweets.slice(0, 2).map((tweet: any, idx: number) => (
-                  <div key={idx} className="bg-white/80 rounded p-2 text-xs">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="font-medium text-gray-800">
-                        {tweet.author}
-                        {tweet.verified && <span className="ml-1 text-blue-500">✓</span>}
-                      </span>
-                      <span className="text-gray-400">{tweet.engagement}</span>
-                    </div>
-                    <p className="text-gray-600 line-clamp-2">{tweet.text}</p>
-                    {tweet.url && (
-                      <a
-                        href={tweet.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-500 hover:underline mt-1 inline-block"
-                      >
-                        View on X
-                      </a>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Footer */}
-          <div className="text-xs text-gray-500 pt-2 border-t border-gray-200 flex items-center justify-between">
-            <span>Source: X API v2 + Grok</span>
-            <span className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
-              Live data
-            </span>
-          </div>
-        </div>
-      );
-    },
+    render: ({ args }) => (
+      <RiskAnalysisCard
+        bankName={args.bankName || 'Unknown'}
+        riskLevel={args.riskLevel || 'LOW'}
+        summary={args.summary || 'No summary available'}
+        keyFindings={args.keyFindings}
+        tweetCount={args.tweetCount}
+        viralScore={args.viralScore}
+        trendVelocity={args.trendVelocity}
+        evidenceTweets={args.evidenceTweets}
+        confidence={args.confidence}
+      />
+    ),
   });
 
   const toggleInstitution = (name: string) => {
@@ -357,77 +437,6 @@ export default function Home() {
               </div>
               <div className="text-xs text-blue-300">{streamingInstitution}</div>
               <div className="text-xs text-slate-400 mt-1">{streamStatus}</div>
-            </div>
-          )}
-
-          {/* Live Results Display */}
-          {Object.keys(liveResults).length > 0 && (
-            <div className="mb-4">
-              <h3 className="text-sm font-medium text-white mb-2 flex items-center justify-between">
-                <span>Analysis Results</span>
-                <button
-                  onClick={() => setLiveResults({})}
-                  className="text-xs text-slate-400 hover:text-white"
-                >
-                  Clear
-                </button>
-              </h3>
-              <div className="space-y-2 max-h-64 overflow-y-auto">
-                {Object.entries(liveResults).map(([institution, analysis]: [string, any]) => {
-                  const riskColors: Record<string, string> = {
-                    HIGH: "border-red-500 bg-red-900/30",
-                    MEDIUM: "border-yellow-500 bg-yellow-900/30",
-                    LOW: "border-green-500 bg-green-900/30",
-                  };
-                  const riskBadgeColors: Record<string, string> = {
-                    HIGH: "bg-red-500",
-                    MEDIUM: "bg-yellow-500",
-                    LOW: "bg-green-500",
-                  };
-                  const riskLevel = analysis?.risk_level || "LOW";
-                  return (
-                    <div
-                      key={institution}
-                      className={`p-3 rounded-lg border ${riskColors[riskLevel] || riskColors.LOW}`}
-                    >
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-sm font-medium text-white">{institution}</span>
-                        <span className={`text-xs px-2 py-0.5 rounded text-white ${riskBadgeColors[riskLevel] || riskBadgeColors.LOW}`}>
-                          {riskLevel}
-                        </span>
-                      </div>
-                      <p className="text-xs text-slate-300 line-clamp-3">
-                        {analysis?.summary || "No summary available"}
-                      </p>
-                      {analysis?.key_findings && analysis.key_findings.length > 0 && (
-                        <div className="mt-2 text-xs text-slate-400">
-                          <span className="font-medium">Findings:</span>
-                          <ul className="mt-1 space-y-1">
-                            {analysis.key_findings.slice(0, 2).map((finding: string, idx: number) => (
-                              <li key={idx} className="line-clamp-2">• {finding}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                      {analysis?.sample_posts && analysis.sample_posts.length > 0 && (
-                        <div className="mt-2">
-                          <a
-                            href={analysis.sample_posts[0]?.match(/https:\/\/x\.com\/\S+/)?.[0] || "#"}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-xs text-blue-400 hover:underline"
-                          >
-                            View source on X →
-                          </a>
-                        </div>
-                      )}
-                      <div className="mt-2 text-xs text-slate-500">
-                        Confidence: {((analysis?.confidence || 0) * 100).toFixed(0)}%
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
             </div>
           )}
 
@@ -577,120 +586,52 @@ export default function Home() {
           </div>
         </header>
 
-        {/* Chat Interface */}
+        {/* Chat Interface - Results now appear inline in chat */}
         <main className="flex-1 overflow-hidden relative flex flex-col">
-          {/* Loading overlay for long operations */}
-          {isStreaming && (
-            <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm z-10 flex items-center justify-center">
-              <div className="bg-slate-800 rounded-xl p-6 shadow-2xl border border-slate-700 max-w-md">
-                <div className="flex items-center gap-4 mb-4">
-                  <div className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
-                    <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                  </div>
-                  <div>
-                    <h3 className="text-white font-semibold">Analyzing {streamingInstitution}</h3>
-                    <p className="text-slate-400 text-sm">{streamStatus}</p>
-                  </div>
-                </div>
-                <div className="w-full bg-slate-700 rounded-full h-2 overflow-hidden">
-                  <div className="bg-gradient-to-r from-blue-500 to-purple-500 h-full rounded-full animate-pulse" style={{width: '60%'}}></div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Streaming Results Panel - Shows above chat when results exist */}
-          {Object.keys(liveResults).length > 0 && (
-            <div className="bg-slate-800/80 border-b border-slate-700 p-4 max-h-[50vh] overflow-y-auto">
+          {/* Streaming Results Cards - Rendered above chat when available */}
+          {streamingResults.length > 0 && (
+            <div className="bg-slate-800/50 border-b border-slate-700 p-4 max-h-[60vh] overflow-y-auto">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-white flex items-center gap-2">
                   <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
-                  Live Analysis Results ({Object.keys(liveResults).length})
+                  Live Analysis Results ({streamingResults.length})
                 </h3>
                 <button
-                  onClick={() => setLiveResults({})}
+                  onClick={() => setStreamingResults([])}
                   className="text-xs text-slate-400 hover:text-white px-2 py-1 rounded hover:bg-slate-700"
                 >
                   Clear All
                 </button>
               </div>
-              <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-                {Object.entries(liveResults).map(([institution, analysis]: [string, any]) => {
-                  const riskColors: Record<string, { bg: string; border: string; text: string; badge: string }> = {
-                    HIGH: { bg: "bg-red-100", border: "border-red-500", text: "text-red-700", badge: "bg-red-500" },
-                    MEDIUM: { bg: "bg-yellow-100", border: "border-yellow-500", text: "text-yellow-700", badge: "bg-yellow-500" },
-                    LOW: { bg: "bg-green-100", border: "border-green-500", text: "text-green-700", badge: "bg-green-500" },
-                  };
-                  const riskLevel = analysis?.risk_level || "LOW";
-                  const colors = riskColors[riskLevel] || riskColors.LOW;
+              <div className="space-y-4">
+                {streamingResults.map((result) => {
+                  const analysis = result.analysis;
+                  // Parse evidence tweets from sample_posts
+                  const evidenceTweets = analysis?.sample_posts?.slice(0, 3).map((post: string) => {
+                    const urlMatch = post.match(/https:\/\/x\.com\/(\w+)\/status\/\d+/);
+                    const author = urlMatch ? `@${urlMatch[1]}` : 'Unknown';
+                    const text = post.replace(/https:\/\/x\.com\/\S+/g, '').trim();
+                    return {
+                      author,
+                      text: text.slice(0, 200),
+                      url: urlMatch ? urlMatch[0] : undefined,
+                      verified: post.includes('[verified]') || post.includes('✓')
+                    };
+                  }) || [];
 
                   return (
-                    <div
-                      key={institution}
-                      className={`rounded-lg border-2 ${colors.border} ${colors.bg} p-4 shadow-lg`}
-                    >
-                      {/* Header */}
-                      <div className="flex items-center justify-between mb-2">
-                        <h4 className="text-base font-bold text-gray-900">{institution}</h4>
-                        <span className={`${colors.badge} text-white text-xs font-bold px-3 py-1 rounded-full`}>
-                          {riskLevel}
-                        </span>
-                      </div>
-
-                      {/* Summary */}
-                      <p className={`${colors.text} text-sm mb-3`}>
-                        {analysis?.summary || "No summary available"}
-                      </p>
-
-                      {/* Metrics */}
-                      <div className="flex flex-wrap gap-2 mb-3 text-xs">
-                        {analysis?.confidence !== undefined && (
-                          <span className="bg-white/60 px-2 py-1 rounded text-gray-700">
-                            Confidence: {(analysis.confidence * 100).toFixed(0)}%
-                          </span>
-                        )}
-                        <span className="bg-white/60 px-2 py-1 rounded text-gray-700">
-                          Source: Grok Live Search
-                        </span>
-                      </div>
-
-                      {/* Key Findings */}
-                      {analysis?.key_findings && analysis.key_findings.length > 0 && (
-                        <div className="mb-3">
-                          <h5 className="text-xs font-semibold text-gray-600 uppercase mb-1">Key Findings</h5>
-                          <ul className="text-xs text-gray-700 space-y-1">
-                            {analysis.key_findings.slice(0, 2).map((finding: string, idx: number) => (
-                              <li key={idx} className="line-clamp-2">• {finding}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-
-                      {/* Sample Posts */}
-                      {analysis?.sample_posts && analysis.sample_posts.length > 0 && (
-                        <div className="border-t border-gray-200 pt-2 mt-2">
-                          <h5 className="text-xs font-semibold text-gray-600 uppercase mb-1">Evidence from X</h5>
-                          {analysis.sample_posts.slice(0, 1).map((post: string, idx: number) => {
-                            const urlMatch = post.match(/https:\/\/x\.com\/\S+/);
-                            return (
-                              <div key={idx} className="text-xs text-gray-600">
-                                <p className="line-clamp-2 mb-1">{post.replace(/https:\/\/x\.com\/\S+/, '').trim()}</p>
-                                {urlMatch && (
-                                  <a
-                                    href={urlMatch[0]}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="text-blue-600 hover:underline"
-                                  >
-                                    View on X →
-                                  </a>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
+                    <RiskAnalysisCard
+                      key={result.id}
+                      bankName={result.institution}
+                      riskLevel={analysis?.risk_level || 'LOW'}
+                      summary={analysis?.summary || 'No summary available'}
+                      keyFindings={analysis?.key_findings}
+                      confidence={analysis?.confidence}
+                      viralScore={analysis?.viral_score}
+                      trendVelocity={analysis?.trend_velocity}
+                      evidenceTweets={evidenceTweets}
+                      timestamp={result.timestamp}
+                    />
                   );
                 })}
               </div>
