@@ -508,6 +508,7 @@ class XAPIClient:
                 stream_kwargs['backfill_minutes'] = min(backfill_minutes, 5)
 
             stream_iter = iter(self.client.stream.posts(**stream_kwargs))
+            utf8_error_count = 0
             while True:
                 try:
                     post_response = next(stream_iter)
@@ -515,10 +516,21 @@ class XAPIClient:
                     break
                 except UnicodeDecodeError:
                     # Skip malformed UTF-8 chunk while iterating stream
+                    utf8_error_count += 1
+                    if utf8_error_count > 10:
+                        # Too many consecutive errors, restart stream
+                        break
                     continue
 
+                # Reset error count on successful read
+                utf8_error_count = 0
+
                 try:
-                    data = post_response.model_dump() if hasattr(post_response, 'model_dump') else dict(post_response)
+                    try:
+                        data = post_response.model_dump() if hasattr(post_response, 'model_dump') else dict(post_response)
+                    except UnicodeDecodeError:
+                        # Skip this post if model_dump fails with UTF-8 error
+                        continue
 
                     if data.get('data'):
                         tweet = data['data']
