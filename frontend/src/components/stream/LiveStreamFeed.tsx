@@ -33,7 +33,6 @@ interface LiveStreamFeedProps {
   isActive: boolean;
   stats?: any;
   onClear?: () => void;
-  onClose?: () => void;
   selectedInstitutions?: string[];
 }
 
@@ -56,7 +55,6 @@ export default function LiveStreamFeed({
   isActive,
   stats,
   onClear,
-  onClose,
   selectedInstitutions = [],
 }: LiveStreamFeedProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -169,15 +167,6 @@ export default function LiveStreamFeed({
               title="Clear feed"
             >
               Clear
-            </button>
-          )}
-          {onClose && (
-            <button
-              onClick={onClose}
-              className="text-slate-400 hover:text-white p-1 rounded hover:bg-slate-700 transition-colors"
-              title="Close feed"
-            >
-              <X className="w-4 h-4" />
             </button>
           )}
         </div>

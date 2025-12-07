@@ -1439,16 +1439,13 @@ export default function Home() {
         </main>
 
         {/* Live Stream Feed - Right Side (Always Visible) */}
-        {showLivePanel && (
-          <LiveStreamFeed
-            events={liveStreamEvents}
-            isActive={liveStreamActive}
-            stats={liveStreamStats}
-            selectedInstitutions={selectedInstitutions}
-            onClear={() => setLiveStreamEvents([])}
-            onClose={() => setShowLivePanel(false)}
-          />
-        )}
+        <LiveStreamFeed
+          events={liveStreamEvents}
+          isActive={liveStreamActive}
+          stats={liveStreamStats}
+          selectedInstitutions={selectedInstitutions}
+          onClear={() => setLiveStreamEvents([])}
+        />
 
         {/* Side Panel - Chat Assistant */}
         <SidePanel
