@@ -728,8 +728,8 @@ def _grok_relevance_filter(tweets: List[Dict], institutions: List[str]) -> List[
             if is_relevant:
                 kept.append(t)
         except Exception:
-            # On Grok error, keep original tweet to avoid losing data
-            kept.append(t)
+            # On Grok error, drop the tweet to avoid leaking non-relevant content
+            continue
         checks += 1  # count after processing attempt (one per tweet)
 
     return kept
