@@ -862,10 +862,21 @@ async def stream_monitor_events():
         def stream_worker():
             """Worker that runs blocking stream and puts events in queue."""
             try:
-                for post in _stream_monitor.x_client.stream_posts(
-                    backfill_minutes=0,
-                    include_user_data=True
-                ):
+                stream_iter = iter(
+                    _stream_monitor.x_client.stream_posts(
+                        backfill_minutes=0,
+                        include_user_data=True
+                    )
+                )
+                while True:
+                    try:
+                        post = next(stream_iter)
+                    except StopIteration:
+                        break
+                    except UnicodeDecodeError:
+                        # Skip malformed UTF-8 chunk and keep streaming
+                        continue
+
                     if stop_event.is_set():
                         break
                     try:
