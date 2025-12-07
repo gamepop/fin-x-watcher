@@ -143,7 +143,7 @@ export default function LiveStreamFeed({
   };
 
   return (
-    <div className="fixed right-0 top-16 h-[calc(100vh-64px)] w-[380px] bg-gradient-to-b from-slate-900 via-slate-800 to-slate-900 border-l border-slate-700/50 shadow-2xl z-30 flex flex-col">
+    <div className="fixed right-0 top-16 h-[calc(100vh-120px)] w-[380px] bg-gradient-to-b from-slate-900 via-slate-800 to-slate-900 border-l border-slate-700/50 shadow-2xl z-30 flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700/50 bg-slate-800/80 backdrop-blur-sm">
         <div className="flex items-center gap-2">
