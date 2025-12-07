@@ -203,7 +203,7 @@ app.add_middleware(
 sentinel_agent = create_sentinel_agent()
 adk_agent = ADKAgent(
     adk_agent=sentinel_agent,
-    app_name="financial_sentinel",
+    app_name="agents",  # align with ADK runner's detected root app name to avoid mismatch
     user_id="web_user",
     session_timeout_seconds=3600,
     use_in_memory_services=True
