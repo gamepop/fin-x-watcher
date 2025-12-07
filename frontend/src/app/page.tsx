@@ -599,21 +599,46 @@ export default function Home() {
           const existing = new Set(prev.map((e) => e.id));
           const mapped: LiveStreamEvent[] = tweets
             .filter((t: any) => t.id && !existing.has(t.id))
-            .map((t: any) => ({
-              id: t.id,
-              type: "tweet",
-              institution: t.institution,
-              text: t.text,
-              author: t.author,
-              author_name: t.author_name,
-              author_verified: t.author_verified,
-              author_followers: t.author_followers,
-              tweet_id: t.id,
-              engagement: t.engagement || { retweets: 0, likes: 0, replies: 0 },
-              url: t.url,
-              timestamp: t.timestamp ? new Date(t.timestamp) : new Date(),
-              matched_rules: t.institution ? [t.institution] : [],
-            }));
+            .map((t: any) => {
+              const authorObj = typeof t.author === "object" && t.author !== null ? t.author : undefined;
+              const handle =
+                typeof t.author === "string"
+                  ? t.author
+                  : authorObj?.username
+                    ? `@${authorObj.username}`
+                    : authorObj?.handle
+                      ? authorObj.handle
+                      : "";
+              const name =
+                typeof t.author_name === "string"
+                  ? t.author_name
+                  : authorObj?.name || authorObj?.username || "";
+              const verified =
+                typeof t.author_verified === "boolean"
+                  ? t.author_verified
+                  : Boolean(authorObj?.verified || authorObj?.verified_type);
+              const followers =
+                typeof t.author_followers === "number"
+                  ? t.author_followers
+                  : typeof authorObj?.followers === "number"
+                    ? authorObj.followers
+                    : 0;
+              return {
+                id: t.id,
+                type: "tweet",
+                institution: t.institution,
+                text: t.text,
+                author: handle || name || "",
+                author_name: name || handle || "",
+                author_verified: verified,
+                author_followers: followers,
+                tweet_id: t.id,
+                engagement: t.engagement || { retweets: 0, likes: 0, replies: 0 },
+                url: t.url,
+                timestamp: t.timestamp ? new Date(t.timestamp) : new Date(),
+                matched_rules: t.institution ? [t.institution] : [],
+              };
+            });
           // Update liveResults coverage for institutions we saw tweets for
           if (mapped.length > 0) {
             const now = new Date();
@@ -680,15 +705,38 @@ export default function Home() {
       es.addEventListener("tweet", (event: any) => {
         try {
           const data = JSON.parse(event.data);
+          const authorObj = typeof data.author === "object" && data.author !== null ? data.author : undefined;
+          const handle =
+            typeof data.author === "string"
+              ? data.author
+              : authorObj?.username
+                ? `@${authorObj.username}`
+                : authorObj?.handle
+                  ? authorObj.handle
+                  : "";
+          const name =
+            typeof data.author_name === "string"
+              ? data.author_name
+              : authorObj?.name || authorObj?.username || "";
+          const verified =
+            typeof data.author_verified === "boolean"
+              ? data.author_verified
+              : Boolean(authorObj?.verified || authorObj?.verified_type);
+          const followers =
+            typeof data.author_followers === "number"
+              ? data.author_followers
+              : typeof authorObj?.followers === "number"
+                ? authorObj.followers
+                : 0;
           const item: LiveStreamEvent = {
             id: data.id || `tweet-${Date.now()}`,
             type: 'tweet',
             institution: data.institution,
             text: data.text,
-            author: data.author,
-            author_name: data.author_name,
-            author_verified: data.author_verified,
-            author_followers: data.author_followers,
+            author: handle || name || "",
+            author_name: name || handle || "",
+            author_verified: verified,
+            author_followers: followers,
             engagement: data.engagement || { retweets: 0, likes: 0, replies: 0 },
             tweet_id: data.id,
             url: data.url,
