@@ -1382,18 +1382,6 @@ export default function Home() {
                     </span>
                   )}
                 </button>
-                <button
-                  onClick={() => setShowSidePanel(!showSidePanel)}
-                  className="p-2 hover:bg-slate-700 rounded-lg transition-colors relative bg-blue-600/20 hover:bg-blue-600/30"
-                  title="Open Chat Assistant"
-                >
-                  <svg className="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                  </svg>
-                  {showSidePanel && (
-                    <span className="absolute -top-1 -right-1 w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
-                  )}
-                </button>
               </div>
               {selectedInstitutions.length > 0 && (
                 <span className="text-sm text-slate-400">
@@ -1664,6 +1652,27 @@ Be concise. Cite your data source (X API + Grok) and include tweet URLs for trac
           </div>
         </div>
       )}
+
+      {/* Floating Chat Button - Bottom Left */}
+      <button
+        onClick={() => setShowSidePanel(!showSidePanel)}
+        className={`fixed bottom-6 left-6 z-50 flex items-center justify-center gap-2 px-4 py-3 rounded-full shadow-2xl transition-all duration-300 ${
+          showSidePanel
+            ? "bg-blue-600 hover:bg-blue-700 text-white"
+            : "bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white"
+        }`}
+        title={showSidePanel ? "Close Chat" : "Open Chat Assistant"}
+      >
+        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+        </svg>
+        <span className="font-medium text-sm hidden sm:inline">
+          {showSidePanel ? "Close Chat" : "Chat"}
+        </span>
+        {showSidePanel && (
+          <span className="absolute -top-1 -right-1 w-3 h-3 bg-green-400 rounded-full animate-pulse border-2 border-white"></span>
+        )}
+      </button>
     </div>
   );
 }
