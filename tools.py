@@ -602,6 +602,42 @@ class XAPIClient:
     # Combined Institution Analysis (Uses All Endpoints)
     # -------------------------------------------------------------------------
 
+    def _build_flexible_query(self, institution_name: str, inst_type: str) -> str:
+        """
+        Build a flexible search query that works for both companies and person names.
+
+        For person names (e.g., "Elon Musk"), creates a more flexible query like:
+        (Elon OR "Elon Musk") to catch partial mentions
+
+        For institutions, uses exact phrase matching: "Chase"
+
+        Args:
+            institution_name: Name to search for
+            inst_type: Institution type from classification
+
+        Returns:
+            Optimized search query string
+        """
+        # If it's an unknown type and contains multiple words, likely a person name
+        is_likely_person = (
+            inst_type == "unknown" and
+            " " in institution_name.strip() and
+            len(institution_name.split()) <= 3  # Avoid long phrases
+        )
+
+        if is_likely_person:
+            # For person names, use flexible matching
+            # e.g., "Elon Musk" becomes (Elon OR "Elon Musk")
+            words = institution_name.strip().split()
+            first_word = words[0]
+
+            # Build query: (FirstName OR "Full Name")
+            flexible_query = f'({first_word} OR "{institution_name}")'
+            return flexible_query
+        else:
+            # For institutions, use exact phrase matching
+            return f'"{institution_name}"'
+
     def get_institution_mentions(
         self,
         institution_name: str,
@@ -633,7 +669,8 @@ class XAPIClient:
         # Combine base + type-specific keywords (prioritize type-specific)
         risk_keywords = type_specific_keywords[:8] + base_risk_keywords[:6]
 
-        primary_query = f'"{institution_name}"'
+        # Build flexible query that works for both institutions and person names
+        primary_query = self._build_flexible_query(institution_name, inst_type)
         risk_query = f'{primary_query} ({" OR ".join(risk_keywords[:12])})'
 
         all_tweets = []
@@ -2252,6 +2289,10 @@ class StreamMonitor:
         # Event deduplication
         self._seen_tweet_ids: set = set()
         self._max_seen_ids = 10000
+        # Stats tracking for frontend display
+        self._tweets_processed = 0
+        self._analyses_performed = 0
+        self._spikes_detected = 0
 
     def _init_grok(self):
         """Lazy initialize Grok client."""
@@ -2267,10 +2308,30 @@ class StreamMonitor:
         inst_type = inst_context["institution_type"]
         risk_keywords = inst_context["risk_keywords"][:6]
 
+        # Build flexible query for person names vs institutions
+        is_likely_person = (
+            inst_type == "unknown" and
+            " " in institution.strip() and
+            len(institution.split()) <= 3
+        )
+
+        if is_likely_person:
+            # For person names, use flexible matching
+            words = institution.strip().split()
+            first_word = words[0]
+            name_clause = f'({first_word} OR "{institution}")'
+        else:
+            # For institutions, use exact phrase
+            name_clause = f'"{institution}"'
+
         # Build optimized stream rule
         # Include institution name + key risk terms
-        keyword_clause = " OR ".join(risk_keywords[:4])
-        rule_value = f'"{institution}" ({keyword_clause}) -is:retweet lang:en'
+        keyword_clause = " OR ".join(risk_keywords[:4]) if risk_keywords else ""
+        if keyword_clause:
+            rule_value = f'{name_clause} ({keyword_clause}) -is:retweet lang:en'
+        else:
+            # If no risk keywords, just monitor the name
+            rule_value = f'{name_clause} -is:retweet lang:en'
 
         self.monitored_institutions[institution.lower()] = {
             "name": institution,
@@ -2334,6 +2395,14 @@ class StreamMonitor:
             if inst.lower() in to_add:
                 self.add_institution(inst)
 
+        # Reset counters when syncing (institution selection changed)
+        if to_remove or to_add:
+            self._tweets_processed = 0
+            self._analyses_performed = 0
+            self._spikes_detected = 0
+            self.event_buffer = []
+            self._seen_tweet_ids = set()
+
         # Apply rules to stream
         result = await self.setup_stream(clear_existing=True)
 
@@ -2342,7 +2411,8 @@ class StreamMonitor:
             "added": list(to_add),
             "removed": list(to_remove),
             "total_monitored": len(self.monitored_institutions),
-            "setup_result": result
+            "setup_result": result,
+            "counters_reset": bool(to_remove or to_add)
         }
 
     def build_stream_rules(self) -> List[Dict]:
@@ -2416,6 +2486,10 @@ class StreamMonitor:
         count = len(self._volume_tracker[inst_key])
         # Spike if more than 10 tweets in 5 minutes
         is_spiking = count > 10
+
+        # Increment spike counter if spike detected
+        if is_spiking:
+            self._spikes_detected += 1
 
         return {
             "is_spiking": is_spiking,
@@ -2564,6 +2638,9 @@ class StreamMonitor:
                                     "quote_count": metrics.get("quotes", 0)
                                 }
                             )
+                            # Increment analysis counter for real-time analysis
+                            if grok_analysis:
+                                self._analyses_performed += 1
                         except Exception as e:
                             grok_analysis = {"error": str(e)}
 
@@ -2608,6 +2685,9 @@ class StreamMonitor:
             "active_rules": len(self.active_rules),
             "buffered_events": len(self.event_buffer),
             "reconnect_attempts": self._reconnect_attempts,
+            "tweets_processed": self._tweets_processed,
+            "analyses_performed": self._analyses_performed,
+            "spikes_detected": self._spikes_detected,
             "volume_trackers": {
                 k: len(v) for k, v in self._volume_tracker.items()
             }
@@ -2645,6 +2725,8 @@ class StreamMonitor:
                         additional_context=context
                     )
                     results[institution] = analysis
+                    # Increment analysis counter
+                    self._analyses_performed += 1
             except Exception as e:
                 results[institution] = {"error": str(e)}
 
