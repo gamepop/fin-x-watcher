@@ -23,29 +23,449 @@ body {
   height: 100%;
   display: flex;
   flex-direction: column;
+  background: transparent !important;
+}
+
+/* Chat wrapper - ensure dark background */
+[class*="copilotkit"] {
+  background: transparent !important;
+  color: #f1f5f9 !important;
+}
+
+/* Main chat container */
+[class*="copilotkit"] > div:first-child,
+[data-copilotkit] > div:first-child {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+/* Chat container background */
+[class*="copilotkit"] [class*="chat"],
+[data-copilotkit] [class*="chat"] {
+  background: transparent !important;
 }
 
 /* Message styling */
 .copilotKitMessage {
   max-width: 100%;
+  padding: 0.75rem 1rem;
+  border-radius: 0.75rem;
+  margin-bottom: 0.5rem;
 }
 
-/* Input area - fix text visibility */
+/* Input area - enhanced styling with gradient */
 .copilotKitInput,
 [class*="copilotkit"] input,
 [class*="copilotkit"] textarea,
 [data-copilotkit] input,
 [data-copilotkit] textarea {
-  border-radius: 0.75rem;
-  background: rgba(30, 41, 59, 0.8) !important;
-  border: 1px solid rgba(71, 85, 105, 0.5);
+  border-radius: 0.75rem !important;
+  background: linear-gradient(135deg, rgba(30, 41, 59, 0.95) 0%, rgba(51, 65, 85, 0.9) 100%) !important;
+  background-color: rgba(30, 41, 59, 0.95) !important;
+  border: 1.5px solid rgba(71, 85, 105, 0.6) !important;
   color: #f1f5f9 !important;
-  caret-color: #f1f5f9 !important;
+  caret-color: #60a5fa !important;
+  padding: 0.875rem 1.25rem !important;
+  transition: all 0.3s ease !important;
+  font-size: 0.9375rem !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2) !important;
 }
 
-.copilotKitInput:focus-within {
-  border-color: rgba(99, 102, 241, 0.5);
-  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+.copilotKitInput:focus-within,
+[class*="copilotkit"] input:focus,
+[class*="copilotkit"] textarea:focus,
+[data-copilotkit] input:focus,
+[data-copilotkit] textarea:focus {
+  border-color: rgba(99, 102, 241, 0.9) !important;
+  box-shadow: 
+    0 0 0 3px rgba(99, 102, 241, 0.25),
+    0 4px 12px rgba(99, 102, 241, 0.15) !important;
+  background: linear-gradient(135deg, rgba(30, 41, 59, 1) 0%, rgba(51, 65, 85, 0.95) 100%) !important;
+  background-color: rgba(30, 41, 59, 1) !important;
+  transform: translateY(-1px) !important;
+}
+
+/* Chat messages container - enhanced */
+[class*="copilotkit"] [class*="messages"],
+[data-copilotkit] [class*="messages"],
+[class*="copilotkit"] [class*="Messages"],
+[data-copilotkit] [class*="Messages"] {
+  background: transparent !important;
+  background-color: transparent !important;
+  padding: 1.5rem !important;
+  background-image: 
+    radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.05) 0%, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(139, 92, 246, 0.05) 0%, transparent 50%) !important;
+}
+
+/* Chat message bubbles - dark theme with enhanced styling */
+[class*="copilotkit"] [class*="message"],
+[data-copilotkit] [class*="message"],
+[class*="copilotkit"] [class*="Message"],
+[data-copilotkit] [class*="Message"] {
+  background: rgba(30, 41, 59, 0.8) !important;
+  background-color: rgba(30, 41, 59, 0.8) !important;
+  color: #f1f5f9 !important;
+  border-radius: 0.75rem !important;
+  padding: 1rem !important;
+  margin-bottom: 0.75rem !important;
+  border: 1px solid rgba(71, 85, 105, 0.4) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2) !important;
+  backdrop-filter: blur(8px) !important;
+}
+
+/* User messages - enhanced styling */
+[class*="copilotkit"] [class*="user"],
+[data-copilotkit] [class*="user"],
+[class*="copilotkit"] [class*="User"],
+[data-copilotkit] [class*="User"] {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.2) 0%, rgba(99, 102, 241, 0.15) 100%) !important;
+  background-color: rgba(59, 130, 246, 0.15) !important;
+  border-color: rgba(59, 130, 246, 0.4) !important;
+  border-width: 1.5px !important;
+}
+
+/* Assistant messages - enhanced styling */
+[class*="copilotkit"] [class*="assistant"],
+[data-copilotkit] [class*="assistant"],
+[class*="copilotkit"] [class*="Assistant"],
+[data-copilotkit] [class*="Assistant"] {
+  background: linear-gradient(135deg, rgba(30, 41, 59, 0.9) 0%, rgba(51, 65, 85, 0.8) 100%) !important;
+  background-color: rgba(30, 41, 59, 0.8) !important;
+  border-color: rgba(71, 85, 105, 0.5) !important;
+  border-width: 1.5px !important;
+}
+
+/* Markdown content in messages */
+[class*="copilotkit"] [class*="message"] p,
+[data-copilotkit] [class*="message"] p,
+[class*="copilotkit"] [class*="message"] h1,
+[data-copilotkit] [class*="message"] h1,
+[class*="copilotkit"] [class*="message"] h2,
+[data-copilotkit] [class*="message"] h2,
+[class*="copilotkit"] [class*="message"] h3,
+[data-copilotkit] [class*="message"] h3,
+[class*="copilotkit"] [class*="message"] ul,
+[data-copilotkit] [class*="message"] ul,
+[class*="copilotkit"] [class*="message"] ol,
+[data-copilotkit] [class*="message"] ol,
+[class*="copilotkit"] [class*="message"] li,
+[data-copilotkit] [class*="message"] li,
+[class*="copilotkit"] [class*="message"] code,
+[data-copilotkit] [class*="message"] code {
+  color: #f1f5f9 !important;
+}
+
+/* Code blocks */
+[class*="copilotkit"] [class*="message"] pre,
+[data-copilotkit] [class*="message"] pre,
+[class*="copilotkit"] [class*="message"] code,
+[data-copilotkit] [class*="message"] code {
+  background: rgba(15, 23, 42, 0.8) !important;
+  color: #e2e8f0 !important;
+  border: 1px solid rgba(71, 85, 105, 0.5) !important;
+}
+
+/* Links in messages */
+[class*="copilotkit"] [class*="message"] a,
+[data-copilotkit] [class*="message"] a {
+  color: #60a5fa !important;
+  text-decoration: underline !important;
+}
+
+[class*="copilotkit"] [class*="message"] a:hover,
+[data-copilotkit] [class*="message"] a:hover {
+  color: #93c5fd !important;
+}
+
+/* Chat container background */
+[class*="copilotkit"] [class*="chat-container"],
+[data-copilotkit] [class*="chat-container"],
+[class*="copilotkit"] [class*="ChatContainer"],
+[data-copilotkit] [class*="ChatContainer"] {
+  background: transparent !important;
+}
+
+/* Override any white backgrounds */
+[class*="copilotkit"] [class*="content"],
+[data-copilotkit] [class*="content"],
+[class*="copilotkit"] [class*="Content"],
+[data-copilotkit] [class*="Content"] {
+  background: transparent !important;
+  color: #f1f5f9 !important;
+}
+
+/* Force dark theme on all CopilotKit elements */
+[class*="copilotkit"] *,
+[data-copilotkit] * {
+  color: inherit;
+}
+
+/* Override white/light backgrounds globally - VERY AGGRESSIVE */
+[class*="copilotkit"] div,
+[data-copilotkit] div,
+[class*="copilotkit"] section,
+[data-copilotkit] section,
+[class*="copilotkit"] article,
+[data-copilotkit] article {
+  background-color: transparent !important;
+}
+
+/* Force dark backgrounds on all message containers - more aggressive */
+[class*="copilotkit"] > div,
+[data-copilotkit] > div,
+[class*="copilotkit"] > section,
+[data-copilotkit] > section {
+  background: transparent !important;
+  color: #f1f5f9 !important;
+}
+
+/* Override any element with white background */
+[class*="copilotkit"] *:not([class*="message"]):not([class*="Message"]),
+[data-copilotkit] *:not([class*="message"]):not([class*="Message"]) {
+  background-color: transparent !important;
+}
+
+/* But allow message bubbles to have their styled background - enhanced */
+[class*="copilotkit"] [class*="message"],
+[data-copilotkit] [class*="message"] {
+  background: rgba(30, 41, 59, 0.85) !important;
+  background-color: rgba(30, 41, 59, 0.85) !important;
+  backdrop-filter: blur(8px) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2) !important;
+}
+
+/* Override text colors in all CopilotKit content */
+[class*="copilotkit"] p,
+[data-copilotkit] p,
+[class*="copilotkit"] span:not([class*="icon"]):not([class*="Icon"]),
+[data-copilotkit] span:not([class*="icon"]):not([class*="Icon"]),
+[class*="copilotkit"] div:not([class*="message"]):not([class*="Message"]),
+[data-copilotkit] div:not([class*="message"]):not([class*="Message"]) {
+  color: #f1f5f9 !important;
+}
+
+/* Force dark backgrounds on all message containers - more aggressive */
+[class*="copilotkit"] > div,
+[data-copilotkit] > div,
+[class*="copilotkit"] > section,
+[data-copilotkit] > section {
+  background: transparent !important;
+  color: #f1f5f9 !important;
+}
+
+/* Override any element with white background */
+[class*="copilotkit"] *,
+[data-copilotkit] * {
+  background-color: transparent !important;
+}
+
+/* But allow message bubbles to have their styled background */
+[class*="copilotkit"] [class*="message"],
+[data-copilotkit] [class*="message"] {
+  background: rgba(30, 41, 59, 0.8) !important;
+}
+
+/* Override text colors */
+[class*="copilotkit"] p,
+[data-copilotkit] p,
+[class*="copilotkit"] span,
+[data-copilotkit] span,
+[class*="copilotkit"] div,
+[data-copilotkit] div {
+  color: #f1f5f9 !important;
+}
+
+/* Specific overrides for common white backgrounds */
+[class*="copilotkit"] [style*="background-color: white"],
+[data-copilotkit] [style*="background-color: white"],
+[class*="copilotkit"] [style*="background-color: #fff"],
+[data-copilotkit] [style*="background-color: #fff"],
+[class*="copilotkit"] [style*="background-color: #ffffff"],
+[data-copilotkit] [style*="background-color: #ffffff"] {
+  background-color: transparent !important;
+}
+
+/* Chat scrollable area */
+[class*="copilotkit"] [class*="scroll"],
+[data-copilotkit] [class*="scroll"],
+[class*="copilotkit"] [class*="Scroll"],
+[data-copilotkit] [class*="Scroll"] {
+  background: transparent !important;
+}
+
+/* Initial message/welcome screen */
+[class*="copilotkit"] [class*="initial"],
+[data-copilotkit] [class*="initial"],
+[class*="copilotkit"] [class*="Initial"],
+[data-copilotkit] [class*="Initial"],
+[class*="copilotkit"] [class*="welcome"],
+[data-copilotkit] [class*="welcome"] {
+  background: transparent !important;
+  color: #f1f5f9 !important;
+}
+
+/* Markdown lists styling */
+[class*="copilotkit"] [class*="message"] ul,
+[data-copilotkit] [class*="message"] ul,
+[class*="copilotkit"] [class*="message"] ol,
+[data-copilotkit] [class*="message"] ol {
+  color: #e2e8f0 !important;
+  margin-left: 1.5rem !important;
+  margin-top: 0.5rem !important;
+  margin-bottom: 0.5rem !important;
+}
+
+[class*="copilotkit"] [class*="message"] li,
+[data-copilotkit] [class*="message"] li {
+  color: #e2e8f0 !important;
+  margin-bottom: 0.25rem !important;
+}
+
+/* Strong/bold text */
+[class*="copilotkit"] [class*="message"] strong,
+[data-copilotkit] [class*="message"] strong,
+[class*="copilotkit"] [class*="message"] b,
+[data-copilotkit] [class*="message"] b {
+  color: #ffffff !important;
+  font-weight: 600 !important;
+}
+
+/* Headings in messages */
+[class*="copilotkit"] [class*="message"] h1,
+[data-copilotkit] [class*="message"] h1 {
+  color: #ffffff !important;
+  font-size: 1.5rem !important;
+  font-weight: 700 !important;
+  margin-top: 1rem !important;
+  margin-bottom: 0.5rem !important;
+}
+
+[class*="copilotkit"] [class*="message"] h2,
+[data-copilotkit] [class*="message"] h2 {
+  color: #ffffff !important;
+  font-size: 1.25rem !important;
+  font-weight: 600 !important;
+  margin-top: 0.75rem !important;
+  margin-bottom: 0.5rem !important;
+}
+
+[class*="copilotkit"] [class*="message"] h3,
+[data-copilotkit] [class*="message"] h3 {
+  color: #f1f5f9 !important;
+  font-size: 1.125rem !important;
+  font-weight: 600 !important;
+  margin-top: 0.5rem !important;
+  margin-bottom: 0.25rem !important;
+}
+
+/* NUCLEAR OPTION: Force dark theme on EVERYTHING in CopilotKit */
+[class*="copilotkit"] *,
+[data-copilotkit] * {
+  background-color: transparent !important;
+  background: transparent !important;
+}
+
+/* Chat area background - ensure it's dark */
+[class*="copilotkit"] [class*="chat-area"],
+[data-copilotkit] [class*="chat-area"],
+[class*="copilotkit"] [class*="ChatArea"],
+[data-copilotkit] [class*="ChatArea"],
+[class*="copilotkit"] [class*="container"],
+[data-copilotkit] [class*="container"] {
+  background: rgba(15, 23, 42, 0.95) !important;
+  background-color: rgba(15, 23, 42, 0.95) !important;
+}
+
+/* Chat viewport/window */
+[class*="copilotkit"] [class*="viewport"],
+[data-copilotkit] [class*="viewport"],
+[class*="copilotkit"] [class*="Viewport"],
+[data-copilotkit] [class*="Viewport"] {
+  background: transparent !important;
+}
+
+/* Ensure the entire chat interface has dark background */
+[class*="copilotkit"] [class*="interface"],
+[data-copilotkit] [class*="interface"],
+[class*="copilotkit"] [class*="Interface"],
+[data-copilotkit] [class*="Interface"] {
+  background: rgba(15, 23, 42, 0.95) !important;
+  background-color: rgba(15, 23, 42, 0.95) !important;
+}
+
+/* Exception: Allow styled message bubbles - enhanced */
+[class*="copilotkit"] [class*="message"],
+[data-copilotkit] [class*="message"],
+[class*="copilotkit"] [class*="Message"],
+[data-copilotkit] [class*="Message"] {
+  background: rgba(30, 41, 59, 0.85) !important;
+  background-color: rgba(30, 41, 59, 0.85) !important;
+  backdrop-filter: blur(8px) !important;
+}
+
+/* Force all text to be light colored */
+[class*="copilotkit"] *,
+[data-copilotkit] * {
+  color: #f1f5f9 !important;
+}
+
+/* Exception: Allow colored badges and icons */
+[class*="copilotkit"] [class*="badge"],
+[data-copilotkit] [class*="badge"],
+[class*="copilotkit"] [class*="icon"],
+[data-copilotkit] [class*="icon"],
+[class*="copilotkit"] svg,
+[data-copilotkit] svg {
+  color: inherit !important;
+}
+
+/* Force dark backgrounds on any white/light elements */
+[class*="copilotkit"] [style*="background"],
+[data-copilotkit] [style*="background"] {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+/* Additional aggressive overrides for white backgrounds */
+[class*="copilotkit"] [style*="background-color: rgb(255"],
+[data-copilotkit] [style*="background-color: rgb(255"],
+[class*="copilotkit"] [style*="background-color:rgb(255"],
+[data-copilotkit] [style*="background-color:rgb(255"] {
+  background-color: transparent !important;
+  background: transparent !important;
+}
+
+/* Chat input container - enhanced */
+[class*="copilotkit"] [class*="input-container"],
+[data-copilotkit] [class*="input-container"],
+[class*="copilotkit"] [class*="InputContainer"],
+[data-copilotkit] [class*="InputContainer"],
+[class*="copilotkit"] [class*="input-wrapper"],
+[data-copilotkit] [class*="input-wrapper"] {
+  background: linear-gradient(to top, rgba(30, 41, 59, 0.95) 0%, rgba(30, 41, 59, 0.85) 100%) !important;
+  background-color: rgba(30, 41, 59, 0.9) !important;
+  border-top: 1px solid rgba(71, 85, 105, 0.5) !important;
+  padding: 1rem !important;
+  backdrop-filter: blur(12px) !important;
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3) !important;
+}
+
+/* Chat toolbar/actions */
+[class*="copilotkit"] [class*="toolbar"],
+[data-copilotkit] [class*="toolbar"],
+[class*="copilotkit"] [class*="Toolbar"],
+[data-copilotkit] [class*="Toolbar"] {
+  background: transparent !important;
+}
+
+/* Chat footer */
+[class*="copilotkit"] [class*="footer"],
+[data-copilotkit] [class*="footer"],
+[class*="copilotkit"] [class*="Footer"],
+[data-copilotkit] [class*="Footer"] {
+  background: rgba(30, 41, 59, 0.8) !important;
+  border-top: 1px solid rgba(71, 85, 105, 0.5) !important;
 }
 
 /* Ensure all text inputs have light text */
