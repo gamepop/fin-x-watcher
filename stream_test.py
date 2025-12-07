@@ -45,9 +45,8 @@ def load_env_from_file(path: str) -> None:
 
 def add_rules(client: Client, rules: List[Dict[str, str]]) -> None:
     try:
-        added = client.stream.update_rules(
-            add=[{"value": r["value"], "tag": r.get("tag")} for r in rules]
-        )
+        body = {"add": [{"value": r["value"], "tag": r.get("tag")} for r in rules]}
+        added = client.stream.update_rules(body=body)
         print("Rules added:", added)
     except Exception as exc:
         print(f"Warning adding rules: {exc}", file=sys.stderr)
@@ -55,35 +54,51 @@ def add_rules(client: Client, rules: List[Dict[str, str]]) -> None:
 
 def stream(client: Client) -> None:
     print("Connecting to filtered stream… (Ctrl+C to stop)")
-    for post in client.stream.posts(
-        tweet_fields=["id", "text", "created_at", "author_id", "public_metrics", "lang"],
-        expansions=["author_id"],
-        user_fields=["username", "verified", "public_metrics"],
-        backfill_minutes=0,
-    ):
-        data = post.model_dump() if hasattr(post, "model_dump") else dict(post)
-        tweet = data.get("data") or {}
-        users = {u.get("id"): u for u in data.get("includes", {}).get("users", [])}
-
-        author = users.get(tweet.get("author_id"), {})
-        handle = f"@{author.get('username', 'unknown')}"
-        tweet_id = tweet.get("id")
-        url = (
-            f"https://x.com/{author.get('username', 'unknown')}/status/{tweet_id}"
-            if tweet_id
-            else "(no url)"
+    stream_iter = iter(
+        client.stream.posts(
+            tweet_fields=["id", "text", "created_at", "author_id", "public_metrics", "lang"],
+            expansions=["author_id"],
+            user_fields=["username", "verified", "public_metrics"],
+            backfill_minutes=0,
         )
-        text = (tweet.get("text") or "").replace("\n", " ")
-        metrics = tweet.get("public_metrics", {}) or {}
+    )
 
-        print(f"[{tweet.get('lang', '?')}] {handle}: {text}")
-        print(
-            f"  url: {url}\n"
-            f"  likes={metrics.get('like_count', 0)} "
-            f"rt={metrics.get('retweet_count', 0)} "
-            f"repl={metrics.get('reply_count', 0)}"
-        )
-        print("----")
+    while True:
+        try:
+            post = next(stream_iter)
+        except StopIteration:
+            break
+        except UnicodeDecodeError:
+            # Skip malformed UTF-8 chunks and continue streaming
+            continue
+
+        try:
+            data = post.model_dump() if hasattr(post, "model_dump") else dict(post)
+            tweet = data.get("data") or {}
+            users = {u.get("id"): u for u in data.get("includes", {}).get("users", [])}
+
+            author = users.get(tweet.get("author_id"), {})
+            handle = f"@{author.get('username', 'unknown')}"
+            tweet_id = tweet.get("id")
+            url = (
+                f"https://x.com/{author.get('username', 'unknown')}/status/{tweet_id}"
+                if tweet_id
+                else "(no url)"
+            )
+            text = (tweet.get("text") or "").replace("\n", " ")
+            metrics = tweet.get("public_metrics", {}) or {}
+
+            print(f"[{tweet.get('lang', '?')}] {handle}: {text}")
+            print(
+                f"  url: {url}\n"
+                f"  likes={metrics.get('like_count', 0)} "
+                f"rt={metrics.get('retweet_count', 0)} "
+                f"repl={metrics.get('reply_count', 0)}"
+            )
+            print("----")
+        except UnicodeDecodeError:
+            # Skip malformed UTF-8 per tweet
+            continue
 
 
 def main() -> None:
