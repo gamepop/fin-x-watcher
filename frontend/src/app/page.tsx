@@ -2,12 +2,29 @@
 
 import { CopilotChat } from "@copilotkit/react-ui";
 import { useCopilotAction } from "@copilotkit/react-core";
-import { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { motion } from "framer-motion";
+import DashboardOverview from "@/components/dashboard/DashboardOverview";
+import EnhancedRiskCard from "@/components/risk/EnhancedRiskCard";
+import ToastContainer from "@/components/ui/ToastContainer";
+import { useToast } from "@/hooks/useToast";
+import { RiskCardSkeleton } from "@/components/ui/Skeleton";
+import TrendChart from "@/components/charts/TrendChart";
+import ViralScoreChart from "@/components/charts/ViralScoreChart";
+import ComparisonView from "@/components/charts/ComparisonView";
+import TimeRangeSelector, { TimeRange } from "@/components/ui/TimeRangeSelector";
+import AnalysisHistory from "@/components/history/AnalysisHistory";
+import AlertCenter from "@/components/alerts/AlertCenter";
+import SettingsPanel from "@/components/settings/SettingsPanel";
+import { exportToCSV, exportToPDF, ExportData } from "@/utils/export";
+import SidePanel from "@/components/ui/SidePanel";
+import AnalysisResultsView from "@/components/results/AnalysisResultsView";
+import LiveStreamFeed from "@/components/stream/LiveStreamFeed";
 
 // Institution categories with icons
 const INSTITUTIONS = {
   "Traditional Banks": [
-    "Elon Musk", "Chase", "Bank of America", "Wells Fargo", "Citibank", "Capital One", "US Bank", "PNC Bank"
+    "Chase", "Bank of America", "Wells Fargo", "Citibank", "Capital One", "US Bank", "PNC Bank"
   ],
   "Crypto Exchanges": [
     "Coinbase", "Binance", "Kraken", "Gemini", "Crypto.com", "KuCoin", "Bitfinex"
@@ -55,12 +72,14 @@ interface AnalysisStage {
 // Live stream event type
 interface LiveStreamEvent {
   id: string;
-  type: 'tweet' | 'analysis' | 'spike' | 'alert' | 'error' | 'connected' | 'reconnecting';
+  type: 'tweet' | 'analysis' | 'spike' | 'error' | 'connected' | 'reconnecting';
   institution?: string;
   text?: string;
   author?: string;
+  author_name?: string;
   author_verified?: boolean;
   author_followers?: number;
+  tweet_id?: string;
   engagement?: {
     retweets: number;
     likes: number;
@@ -73,8 +92,6 @@ interface LiveStreamEvent {
   url?: string;
   timestamp: Date;
   matched_rules?: string[];
-  alert_reason?: string;
-  grok_analysis?: any;
 }
 
 // Streaming result type for chat history
@@ -82,39 +99,10 @@ interface StreamingResult {
   id: string;
   institution: string;
   analysis: any;
-  timestamp: Date;
+  timestamp?: Date;
 }
 
-// Helper function to render text with clickable X/Twitter links
-function TextWithLinks({ text }: { text: string }) {
-  // Split text by X/Twitter URLs
-  const urlRegex = /(https?:\/\/(?:x\.com|twitter\.com)\/\w+\/status\/\d+)/g;
-  const parts = text.split(urlRegex);
-
-  return (
-    <>
-      {parts.map((part, idx) => {
-        if (part.match(urlRegex)) {
-          return (
-            <a
-              key={idx}
-              href={part}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
-              onClick={(e) => e.stopPropagation()}
-            >
-              [view]
-            </a>
-          );
-        }
-        return <span key={idx}>{part}</span>;
-      })}
-    </>
-  );
-}
-
-// Reusable Risk Analysis Card Component - matches the agent's display_risk_analysis render
+// Keep old RiskAnalysisCard for CopilotKit render (lightweight version)
 function RiskAnalysisCard({
   bankName,
   riskLevel,
@@ -140,105 +128,94 @@ function RiskAnalysisCard({
   timestamp?: Date;
   isStreaming?: boolean;
 }) {
-  const riskColors: Record<string, { bg: string; border: string; text: string; badge: string; glow: string }> = {
-    HIGH: { bg: "bg-red-100", border: "border-red-500", text: "text-red-700", badge: "bg-red-500", glow: "shadow-red-500/30" },
-    MEDIUM: { bg: "bg-yellow-100", border: "border-yellow-500", text: "text-yellow-700", badge: "bg-yellow-500", glow: "shadow-yellow-500/30" },
-    LOW: { bg: "bg-green-100", border: "border-green-500", text: "text-green-700", badge: "bg-green-500", glow: "shadow-green-500/30" },
+  const riskColors: Record<string, { bg: string; border: string; text: string; badge: string; glow: string; pulse: string }> = {
+    HIGH: { bg: "bg-red-950/40", border: "border-red-500/50", text: "text-red-100", badge: "bg-red-500", glow: "shadow-red-500/30", pulse: "animate-pulse" },
+    MEDIUM: { bg: "bg-amber-950/40", border: "border-amber-500/50", text: "text-amber-100", badge: "bg-amber-500", glow: "shadow-amber-500/20", pulse: "" },
+    LOW: { bg: "bg-emerald-950/40", border: "border-emerald-500/50", text: "text-emerald-100", badge: "bg-emerald-500", glow: "shadow-emerald-500/10", pulse: "" },
   };
   const colors = riskColors[riskLevel] || riskColors.LOW;
 
   return (
-    <div className={`rounded-lg border-2 ${colors.border} ${colors.bg} p-4 my-3 shadow-lg ${colors.glow}`}>
-      {/* Header */}
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
+    <div className={`rounded-xl border-2 ${colors.border} ${colors.bg} backdrop-blur-sm p-5 my-4 shadow-xl ${colors.glow} ${riskLevel === 'HIGH' ? colors.pulse : ''} !bg-opacity-100`}>
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-3">
           {isStreaming && (
-            <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
+            <motion.span
+              animate={{ scale: [1, 1.2, 1] }}
+              transition={{ duration: 1, repeat: Infinity }}
+              className="w-2.5 h-2.5 rounded-full bg-blue-400"
+            />
           )}
-          <h3 className="text-lg font-bold text-gray-900">{bankName}</h3>
+          <h3 className="text-lg font-bold text-white">{bankName}</h3>
         </div>
         <div className="flex items-center gap-2">
           {viralScore !== undefined && (
-            <span className="text-xs bg-purple-100 text-purple-700 px-2 py-1 rounded-full">
+            <span className="text-xs bg-purple-500/20 text-purple-300 px-2.5 py-1 rounded-full border border-purple-500/30 font-semibold">
               Viral: {viralScore}/100
             </span>
           )}
-          <span className={`${colors.badge} text-white text-xs font-bold px-3 py-1 rounded-full ${riskLevel === 'HIGH' ? 'animate-pulse' : ''}`}>
+          <span className={`${colors.badge} text-white text-xs font-bold px-3 py-1.5 rounded-full ${riskLevel === 'HIGH' ? 'animate-pulse' : ''} shadow-lg`}>
             {riskLevel}
           </span>
         </div>
       </div>
-
-      {/* Summary */}
-      <p className={`${colors.text} text-sm mb-3 font-medium`}>
-        <TextWithLinks text={summary} />
-      </p>
-
-      {/* Metrics Row */}
-      <div className="flex flex-wrap gap-3 mb-3 text-xs">
+      <p className={`${colors.text} text-sm mb-4 font-medium leading-relaxed`}>{summary}</p>
+      <div className="flex flex-wrap gap-3 mb-4 text-xs">
         {tweetCount !== undefined && tweetCount > 0 && (
-          <div className="bg-white/60 px-3 py-1.5 rounded-lg">
-            <span className="text-gray-500">Tweets:</span>{" "}
-            <span className="font-semibold text-gray-800">{tweetCount}</span>
+          <div className="bg-slate-700/50 px-3 py-1.5 rounded-lg border border-slate-600/50">
+            <span className="text-slate-400">Tweets:</span>{" "}
+            <span className="font-semibold text-white">{tweetCount}</span>
           </div>
         )}
         {trendVelocity !== undefined && (
-          <div className="bg-white/60 px-3 py-1.5 rounded-lg">
-            <span className="text-gray-500">Trend:</span>{" "}
-            <span className={`font-semibold ${trendVelocity > 0 ? 'text-red-600' : 'text-green-600'}`}>
+          <div className="bg-slate-700/50 px-3 py-1.5 rounded-lg border border-slate-600/50">
+            <span className="text-slate-400">Trend:</span>{" "}
+            <span className={`font-semibold ${trendVelocity > 0 ? 'text-red-400' : 'text-green-400'}`}>
               {trendVelocity > 0 ? '+' : ''}{trendVelocity?.toFixed(1)}%
             </span>
           </div>
         )}
         {confidence !== undefined && (
-          <div className="bg-white/60 px-3 py-1.5 rounded-lg">
-            <span className="text-gray-500">Confidence:</span>{" "}
-            <span className="font-semibold text-gray-800">{(confidence * 100).toFixed(0)}%</span>
+          <div className="bg-slate-700/50 px-3 py-1.5 rounded-lg border border-slate-600/50">
+            <span className="text-slate-400">Confidence:</span>{" "}
+            <span className="font-semibold text-white">{(confidence * 100).toFixed(0)}%</span>
           </div>
         )}
       </div>
-
-      {/* Key Findings */}
       {keyFindings && keyFindings.length > 0 && (
-        <div className="mb-3">
-          <h4 className="text-xs font-semibold text-gray-600 uppercase mb-1">Key Findings</h4>
-          <ul className="text-sm text-gray-700 space-y-1">
+        <div className="mb-4">
+          <h4 className="text-xs font-semibold text-slate-300 uppercase mb-2 tracking-wide">Key Findings</h4>
+          <ul className="text-sm text-slate-200 space-y-2">
             {keyFindings.slice(0, 4).map((finding: string, idx: number) => (
               <li key={idx} className="flex items-start gap-2">
-                <span className="text-gray-400 flex-shrink-0">-</span>
-                <span><TextWithLinks text={finding} /></span>
+                <span className="text-blue-400 mt-0.5">•</span>
+                <span className="leading-relaxed">{finding}</span>
               </li>
             ))}
           </ul>
         </div>
       )}
-
-      {/* Evidence Tweets */}
       {evidenceTweets && evidenceTweets.length > 0 && (
-        <div className="mb-3">
-          <h4 className="text-xs font-semibold text-gray-600 uppercase mb-1">Evidence from X</h4>
+        <div className="mb-4">
+          <h4 className="text-xs font-semibold text-slate-300 uppercase mb-2 tracking-wide">Evidence from X</h4>
           <div className="space-y-2">
             {evidenceTweets.slice(0, 2).map((tweet: any, idx: number) => (
-              <div key={idx} className="bg-white/80 rounded p-2 text-xs">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="font-medium text-gray-800">
+              <div key={idx} className="bg-slate-700/50 rounded-lg p-3 text-xs border border-slate-600/50">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="font-medium text-white">
                     {tweet.author}
-                    {tweet.verified && <span className="ml-1 text-blue-500">✓</span>}
+                    {tweet.verified && <span className="ml-1 text-blue-400">✓</span>}
                   </span>
-                  {tweet.engagement && <span className="text-gray-400">{tweet.engagement}</span>}
+                  {tweet.engagement && <span className="text-slate-400 text-xs">{tweet.engagement}</span>}
                 </div>
-                <p className="text-gray-600 line-clamp-2">{tweet.text}</p>
+                <p className="text-slate-300 line-clamp-2 leading-relaxed">{tweet.text}</p>
                 {tweet.url && (
                   <a
                     href={tweet.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-blue-600 hover:text-blue-800 hover:underline mt-1 inline-flex items-center gap-1 font-medium cursor-pointer"
-                    onClick={(e) => e.stopPropagation()}
+                    className="text-blue-400 hover:text-blue-300 hover:underline mt-1.5 inline-block text-xs font-medium"
                   >
-                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
-                      <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
-                    </svg>
                     View on X →
                   </a>
                 )}
@@ -247,20 +224,25 @@ function RiskAnalysisCard({
           </div>
         </div>
       )}
-
-      {/* Footer */}
-      <div className="text-xs text-gray-500 pt-2 border-t border-gray-200 flex items-center justify-between">
-        <span>Source: X API v2 + Grok Live Search</span>
-        <span className="flex items-center gap-1">
+      <div className="text-xs text-slate-400 pt-3 border-t border-slate-700/50 flex items-center justify-between">
+        <span className="flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-blue-400"></span>
+          Source: X API v2 + Grok Live Search
+        </span>
+        <span className="flex items-center gap-1.5">
           {isStreaming ? (
             <>
-              <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse"></span>
-              Streaming
+              <motion.span
+                animate={{ scale: [1, 1.2, 1] }}
+                transition={{ duration: 1, repeat: Infinity }}
+                className="w-2 h-2 rounded-full bg-blue-400"
+              />
+              <span className="text-blue-400">Streaming</span>
             </>
           ) : (
             <>
               <span className="w-2 h-2 rounded-full bg-green-400"></span>
-              {timestamp ? timestamp.toLocaleTimeString() : 'Live data'}
+              <span className="text-green-400">{timestamp ? timestamp.toLocaleTimeString() : 'Live data'}</span>
             </>
           )}
         </span>
@@ -285,12 +267,6 @@ export default function Home() {
   // Streaming results for chat history (renders as cards)
   const [streamingResults, setStreamingResults] = useState<StreamingResult[]>([]);
 
-  // Continuous monitoring state
-  const [nextCheckTime, setNextCheckTime] = useState<Date | null>(null);
-  const [monitoringQueue, setMonitoringQueue] = useState<string[]>([]);
-  const [currentMonitoringIndex, setCurrentMonitoringIndex] = useState(0);
-  const monitoringIntervalRef = useRef<NodeJS.Timeout | null>(null);
-
   // API health status
   const [apiHealth, setApiHealth] = useState<any>(null);
 
@@ -301,10 +277,206 @@ export default function Home() {
   const [liveStreamError, setLiveStreamError] = useState<string | null>(null);
   const liveStreamRef = useRef<EventSource | null>(null);
   const [showLivePanel, setShowLivePanel] = useState(true);
+  const pollingInFlightRef = useRef<boolean>(false);
 
-  // Analysis settings
-  const [hoursBack, setHoursBack] = useState(24); // Time period for analysis
-  const [analysisMode, setAnalysisMode] = useState<any>(null); // Current analysis mode info
+  // Toast notifications
+  const toast = useToast();
+
+  // Time range for charts
+  const [timeRange, setTimeRange] = useState<TimeRange>("24h");
+
+  // Phase 3: Enhanced Sidebar state
+  const [searchQuery, setSearchQuery] = useState("");
+  const [sortBy, setSortBy] = useState<"name" | "risk" | "viralScore">("name");
+  const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
+
+  // Phase 3: Settings & Alerts state
+  const [showSettings, setShowSettings] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [showAlerts, setShowAlerts] = useState(false);
+  const [alertFilter, setAlertFilter] = useState<"HIGH" | "MEDIUM" | "ALL">("ALL");
+  
+  // Side panel state
+  const [showSidePanel, setShowSidePanel] = useState(false);
+
+  // Calculate dashboard stats
+  const dashboardStats = useMemo(() => {
+    const allResults = Object.values(liveResults);
+    const riskDistribution = {
+      HIGH: allResults.filter((r: any) => r?.risk_level === "HIGH").length,
+      MEDIUM: allResults.filter((r: any) => r?.risk_level === "MEDIUM").length,
+      LOW: allResults.filter((r: any) => r?.risk_level === "LOW").length,
+    };
+    const activeAlerts = riskDistribution.HIGH + riskDistribution.MEDIUM;
+    const totalTweets = allResults.reduce((sum: number, r: any) => sum + (r?.tweet_count || 0), 0);
+    const avgViralScore =
+      allResults.length > 0
+        ? allResults.reduce((sum: number, r: any) => sum + (r?.viral_score || 0), 0) /
+          allResults.length
+        : 0;
+
+    return {
+      totalInstitutions: selectedInstitutions.length,
+      activeAlerts,
+      riskDistribution,
+      totalTweetsToday: totalTweets,
+      avgViralScore,
+      lastAnalysisTime: lastMonitorTime || undefined,
+    };
+  }, [liveResults, selectedInstitutions.length, lastMonitorTime]);
+
+  // Generate trend chart data
+  // NOTE: Volume data is simulated based on current tweet counts
+  // Real historical volume data would require calling /trends/{institution} API endpoint
+  const trendChartData = useMemo(() => {
+    const allResults = Object.values(liveResults);
+    if (allResults.length === 0) return [];
+
+    // Get average tweet count and viral score from current results
+    const avgTweetCount = allResults.length > 0
+      ? Math.round(allResults.reduce((sum: number, r: any) => sum + (r?.tweet_count || 0), 0) / allResults.length)
+      : 0;
+    const avgViralScore = allResults.length > 0
+      ? allResults.reduce((sum: number, r: any) => sum + (r?.viral_score || 0), 0) / allResults.length
+      : 0;
+
+    // Generate time series data based on time range
+    const hours = timeRange === "1h" ? 1 : timeRange === "6h" ? 6 : timeRange === "24h" ? 24 : 168;
+    const dataPoints = Math.max(2, Math.min(hours, 12)); // ensure at least 2 to avoid division by zero
+    const interval = hours / (dataPoints - 1); // spread across range
+
+    // Use current tweet count as baseline, with some variation to show trend
+    // This simulates historical data - for real data, call /trends/{institution} endpoint
+    return Array.from({ length: dataPoints }, (_, i) => {
+      const timeValue = hours - (i * interval);
+      const timeLabel =
+        timeRange === "7d"
+          ? `${Math.floor(timeValue / 24)}d`
+          : `${Math.floor(timeValue)}h`;
+      
+      // Simulate volume trend: start lower, build up to current count
+      // This is simulated - real data would come from API
+      const progress = i / (dataPoints - 1); // 0 to 1
+      const volume = Math.round(avgTweetCount * (0.6 + 0.4 * progress) + (Math.random() * 20 - 10));
+      
+      return {
+        time: timeLabel,
+        volume: Math.max(0, volume), // Ensure non-negative
+        viralScore: avgViralScore,
+      };
+    }).reverse();
+  }, [liveResults, timeRange]);
+
+  // Generate viral score chart data
+  // ✅ REAL DATA: Uses actual viral scores and risk levels from analysis results
+  const viralScoreChartData = useMemo(() => {
+    return Object.entries(liveResults).map(([institution, analysis]: [string, any]) => ({
+      institution,
+      viralScore: analysis?.viral_score || 0,
+      riskLevel: analysis?.risk_level || "LOW",
+    }));
+  }, [liveResults]);
+
+  // Generate comparison view data
+  // ✅ REAL DATA: Uses actual analysis results (risk level, viral score, trend velocity, tweet count)
+  const comparisonData = useMemo(() => {
+    return Object.entries(liveResults).map(([institution, analysis]: [string, any]) => ({
+      institution,
+      riskLevel: analysis?.risk_level || "LOW",
+      viralScore: analysis?.viral_score || 0,
+      trendVelocity: analysis?.trend_velocity || 0,
+      tweetCount: analysis?.tweet_count || 0,
+    }));
+  }, [liveResults]);
+
+  // Phase 3: Generate analysis history from streaming results
+  const analysisHistory = useMemo(() => {
+    return streamingResults
+      .filter((result) => result.timestamp) // Filter out entries without timestamps
+      .map((result) => ({
+        institution: result.institution,
+        timestamp: result.timestamp!, // Non-null assertion after filter
+        riskLevel: result.analysis?.risk_level || "LOW",
+        viralScore: result.analysis?.viral_score || 0,
+        tweetCount: result.analysis?.tweet_count || 0,
+        summary: result.analysis?.summary || "",
+        keyFindings: result.analysis?.key_findings || [],
+      }));
+  }, [streamingResults]);
+
+  // Phase 3: Generate alerts from analysis results
+  const alerts = useMemo(() => {
+    const alertList: Array<{
+      id: string;
+      institution: string;
+      riskLevel: "HIGH" | "MEDIUM";
+      message: string;
+      timestamp: Date;
+      read: boolean;
+      details?: {
+        viralScore: number;
+        tweetCount: number;
+        keyFindings: string[];
+      };
+    }> = [];
+
+    Object.entries(liveResults).forEach(([institution, analysis]: [string, any]) => {
+      if (analysis?.risk_level === "HIGH" || analysis?.risk_level === "MEDIUM") {
+        alertList.push({
+          id: `${institution}-${analysis.last_updated || analysis.timestamp || institution}`,
+          institution,
+          riskLevel: analysis.risk_level,
+          message: analysis.summary || `${analysis.risk_level} risk detected for ${institution}`,
+          timestamp: analysis.last_updated
+            ? new Date(analysis.last_updated)
+            : analysis.timestamp
+              ? new Date(analysis.timestamp)
+              : new Date(),
+          read: false,
+          details: {
+            viralScore: analysis.viral_score || 0,
+            tweetCount: analysis.tweet_count || 0,
+            keyFindings: analysis.key_findings || [],
+          },
+        });
+      }
+    });
+
+    return alertList;
+  }, [liveResults]);
+
+  const [readAlerts, setReadAlerts] = useState<Set<string>>(new Set());
+  const [dismissedAlerts, setDismissedAlerts] = useState<Set<string>>(new Set());
+
+  const activeAlerts = useMemo(() => {
+    return alerts
+      .filter((alert) => !dismissedAlerts.has(alert.id))
+      .map((alert) => ({
+        ...alert,
+        read: readAlerts.has(alert.id),
+      }));
+  }, [alerts, readAlerts, dismissedAlerts]);
+
+  // Phase 3: Export handlers
+  const handleExport = (format: "csv" | "pdf") => {
+    const exportData: ExportData[] = analysisHistory
+      .filter((entry) => entry.timestamp) // Filter out entries without timestamps
+      .map((entry) => ({
+        institution: entry.institution,
+        timestamp: entry.timestamp!.toISOString(), // Non-null assertion after filter
+        riskLevel: entry.riskLevel,
+        viralScore: entry.viralScore,
+        tweetCount: entry.tweetCount,
+        summary: entry.summary,
+        keyFindings: entry.keyFindings,
+    }));
+
+    if (format === "csv") {
+      exportToCSV(exportData);
+    } else {
+      exportToPDF(exportData);
+    }
+  };
 
   // Fetch API health on mount
   useEffect(() => {
@@ -313,115 +485,6 @@ export default function Home() {
       .then(data => setApiHealth(data))
       .catch(() => setApiHealth({ status: "offline" }));
   }, []);
-
-  // Function to run a monitoring cycle (analyze all selected institutions)
-  const runMonitoringCycle = useCallback(async () => {
-    if (selectedInstitutions.length === 0 || isStreaming) return;
-
-    // Analyze each institution sequentially
-    for (const institution of selectedInstitutions) {
-      setStreamingInstitution(institution);
-      setStreamStatus(`Monitoring: Analyzing ${institution}...`);
-
-      try {
-        // Use SSE to get the result
-        const eventSource = new EventSource(
-          `http://localhost:8000/stream/analyze/${encodeURIComponent(institution)}`
-        );
-
-        await new Promise<void>((resolve, reject) => {
-          eventSource.addEventListener("result", (event) => {
-            const data: AnalysisStage = JSON.parse(event.data);
-            const analysis = data.analysis;
-
-            // Store result
-            setLiveResults(prev => ({
-              ...prev,
-              [institution]: analysis
-            }));
-
-            // Add to streaming results for card display
-            setStreamingResults(prev => [
-              ...prev,
-              {
-                id: `monitor-${institution}-${Date.now()}`,
-                institution,
-                analysis,
-                timestamp: new Date()
-              }
-            ]);
-          });
-
-          eventSource.addEventListener("done", () => {
-            eventSource.close();
-            resolve();
-          });
-
-          eventSource.addEventListener("error", () => {
-            eventSource.close();
-            resolve(); // Continue to next institution even on error
-          });
-
-          eventSource.onerror = () => {
-            eventSource.close();
-            resolve();
-          };
-
-          // Timeout after 60 seconds per institution
-          setTimeout(() => {
-            eventSource.close();
-            resolve();
-          }, 60000);
-        });
-
-        // Small delay between institutions to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 2000));
-      } catch (error) {
-        console.error(`Error monitoring ${institution}:`, error);
-      }
-    }
-
-    setStreamingInstitution(null);
-    setStreamStatus("");
-    setLastMonitorTime(new Date());
-
-    // Calculate next check time
-    const nextTime = new Date(Date.now() + monitoringInterval * 60 * 1000);
-    setNextCheckTime(nextTime);
-  }, [selectedInstitutions, isStreaming, monitoringInterval]);
-
-  // Continuous monitoring effect
-  useEffect(() => {
-    if (isMonitoring && selectedInstitutions.length > 0) {
-      // Run immediately on first enable
-      runMonitoringCycle();
-
-      // Set up interval for subsequent checks
-      const intervalMs = monitoringInterval * 60 * 1000;
-      monitoringIntervalRef.current = setInterval(() => {
-        runMonitoringCycle();
-      }, intervalMs);
-
-      // Calculate initial next check time
-      const nextTime = new Date(Date.now() + intervalMs);
-      setNextCheckTime(nextTime);
-
-      return () => {
-        if (monitoringIntervalRef.current) {
-          clearInterval(monitoringIntervalRef.current);
-          monitoringIntervalRef.current = null;
-        }
-        setNextCheckTime(null);
-      };
-    } else {
-      // Clear interval when monitoring is disabled
-      if (monitoringIntervalRef.current) {
-        clearInterval(monitoringIntervalRef.current);
-        monitoringIntervalRef.current = null;
-      }
-      setNextCheckTime(null);
-    }
-  }, [isMonitoring, selectedInstitutions.length, monitoringInterval, runMonitoringCycle]);
 
   // SSE streaming function - results render as cards above chat
   const streamAnalysis = useCallback(async (institution: string) => {
@@ -463,6 +526,15 @@ export default function Home() {
             timestamp: new Date()
           }
         ]);
+
+        // Toast notification based on risk level
+        if (data.risk_level === "HIGH") {
+          toast.error(`HIGH risk detected for ${institution}!`);
+        } else if (data.risk_level === "MEDIUM") {
+          toast.info(`MEDIUM risk detected for ${institution}`);
+        } else {
+          toast.success(`Analysis complete for ${institution} - LOW risk`);
+        }
       });
 
       eventSource.addEventListener("done", () => {
@@ -470,28 +542,102 @@ export default function Home() {
         setIsStreaming(false);
         setStreamingInstitution(null);
         setLastMonitorTime(new Date());
+        toast.success(`Analysis complete for ${institution}`);
       });
 
-      eventSource.addEventListener("error", (event) => {
-        const data = event.data ? JSON.parse((event as any).data) : { message: "Connection error" };
+      eventSource.addEventListener("error", (event: any) => {
+        const data = event.data ? JSON.parse(event.data) : { message: "Connection error" };
         setStreamStatus(`Error: ${data.message}`);
         eventSource.close();
         setIsStreaming(false);
+        toast.error(`Analysis failed for ${institution}: ${data.message}`);
       });
 
       eventSource.onerror = () => {
         eventSource.close();
         setIsStreaming(false);
         setStreamStatus("Connection lost");
+        toast.error(`Connection lost for ${institution}`);
       };
 
     } catch (error) {
       setIsStreaming(false);
       setStreamStatus(`Failed to connect: ${error}`);
+      toast.error(`Failed to connect: ${error}`);
     }
-  }, []);
+  }, [toast]);
 
-  // Sync stream rules with portfolio and start live stream
+  // Polling fallback (search_recent) when monitoring mode is on
+  const pollTweets = useCallback(
+    async function pollTweetsCallback() {
+      if (pollingInFlightRef.current) return;
+      if (selectedInstitutions.length === 0) return;
+      pollingInFlightRef.current = true;
+      try {
+        const response = await fetch("http://localhost:8000/monitor/poll", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            institutions: selectedInstitutions,
+            max_results: 20,
+          }),
+        });
+        if (!response.ok) {
+          throw new Error(`Polling failed: ${response.status} ${response.statusText}`);
+        }
+        const data = await response.json();
+        const tweets = data.tweets || [];
+        setLastMonitorTime(new Date());
+        setLiveStreamEvents((prev) => {
+          const existing = new Set(prev.map((e) => e.id));
+          const mapped: LiveStreamEvent[] = tweets
+            .filter((t: any) => t.id && !existing.has(t.id))
+            .map((t: any) => ({
+              id: t.id,
+              type: "tweet",
+              institution: t.institution,
+              text: t.text,
+              author: t.author,
+              author_name: t.author_name,
+              author_verified: t.author_verified,
+              author_followers: t.author_followers,
+              tweet_id: t.id,
+              engagement: t.engagement || { retweets: 0, likes: 0, replies: 0 },
+              url: t.url,
+              timestamp: t.timestamp ? new Date(t.timestamp) : new Date(),
+              matched_rules: t.institution ? [t.institution] : [],
+            }));
+          // Update liveResults coverage for institutions we saw tweets for
+          if (mapped.length > 0) {
+            const now = new Date();
+            setLiveResults((prevResults) => {
+              const next = { ...prevResults };
+              mapped.forEach((m) => {
+                if (!m.institution) return;
+                const existing = next[m.institution] || {};
+                next[m.institution] = {
+                  ...existing, // preserve prior analysis fields (viral_score, tweet_count, etc.)
+                  risk_level: existing.risk_level || "LOW",
+                  summary: existing.summary || "Recent tweet activity detected.",
+                  last_updated: now,
+                };
+              });
+              return next;
+            });
+          }
+          return [...mapped, ...prev].slice(0, 100);
+        });
+      } catch (error: any) {
+        console.error("Polling error:", error);
+        setLiveStreamError(error?.message || "Polling error");
+      } finally {
+        pollingInFlightRef.current = false;
+      }
+    },
+    [selectedInstitutions]
+  );
+
+  // Sync stream rules with portfolio and start live stream (polling-only mode)
   const startLiveStream = useCallback(async () => {
     if (selectedInstitutions.length === 0) {
       setLiveStreamError("Please select at least one institution to monitor");
@@ -499,189 +645,19 @@ export default function Home() {
     }
 
     setLiveStreamError(null);
-    setLiveStreamActive(true);
-    // Clear previous events and stats when starting fresh
-    setLiveStreamEvents([{
-      id: `connecting-${Date.now()}`,
-      type: 'reconnecting',
-      timestamp: new Date(),
-      summary: `Syncing rules for ${selectedInstitutions.length} institutions...`
-    }]);
-    setLiveStreamStats(null);
-
-    try {
-      // First sync rules with portfolio
-      const syncResponse = await fetch("http://localhost:8000/monitor/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ institutions: selectedInstitutions })
-      });
-
-      if (!syncResponse.ok) {
-        throw new Error("Failed to sync stream rules");
-      }
-
-      const syncData = await syncResponse.json();
-      console.log("Synced stream rules:", syncData);
-
-      // Check if there was an X API error (Filtered Stream requires Pro tier)
-      if (syncData.setup_result?.result?.status === "error") {
-        const errorMsg = syncData.setup_result.result.error || "Unknown error";
-        if (errorMsg.includes("400") || errorMsg.includes("Bad Request")) {
-          setLiveStreamEvents(prev => [...prev, {
-            id: `error-${Date.now()}`,
-            type: 'error',
-            timestamp: new Date(),
-            summary: "Filtered Stream API requires X API Pro tier ($5k/month). Using polling mode instead."
-          }]);
-          // Fall back to polling mode - use the continuous monitoring feature
-          setLiveStreamActive(false);
-          setIsMonitoring(true);
-          return;
-        }
-        throw new Error(errorMsg);
-      }
-
-      // Add success event
-      setLiveStreamEvents(prev => [...prev, {
-        id: `synced-${Date.now()}`,
+    setLiveStreamActive(false);
+    setIsMonitoring(true);
+    setLiveStreamEvents(prev => [
+      {
+        id: `poll-start-${Date.now()}`,
         type: 'connected',
         timestamp: new Date(),
-        summary: `Rules synced! Monitoring: ${syncData.added?.join(", ") || selectedInstitutions.join(", ")}`
-      }]);
-
-      // Start SSE connection to live stream
-      if (liveStreamRef.current) {
-        liveStreamRef.current.close();
-      }
-
-      const eventSource = new EventSource("http://localhost:8000/monitor/stream");
-      liveStreamRef.current = eventSource;
-
-      eventSource.addEventListener("connected", (event) => {
-        const data = JSON.parse(event.data);
-        setLiveStreamActive(true);
-        setLiveStreamEvents(prev => [...prev, {
-          id: `connected-${Date.now()}`,
-          type: 'connected',
-          timestamp: new Date(),
-          summary: `Connected! Monitoring ${data.institutions?.length || selectedInstitutions.length} institutions (${data.rules_count || 0} rules)`
-        }]);
-      });
-
-      eventSource.addEventListener("heartbeat", (event) => {
-        const data = JSON.parse(event.data);
-        // Update stats to show we're still connected
-        setLiveStreamStats(prev => ({
-          ...prev,
-          last_heartbeat: data.timestamp,
-          status: data.status
-        }));
-      });
-
-      eventSource.addEventListener("tweet", (event) => {
-        const data = JSON.parse(event.data);
-        const newEvent: LiveStreamEvent = {
-          id: data.id || data.tweet_id || `tweet-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
-          type: 'tweet',
-          institution: data.matched_rules?.[0]?.tag || data.institution,
-          text: data.text,
-          author: data.author?.username ? `@${data.author.username}` : 'Unknown',
-          author_verified: data.author?.verified,
-          author_followers: data.author?.followers_count,
-          engagement: {
-            retweets: data.metrics?.retweet_count || 0,
-            likes: data.metrics?.like_count || 0,
-            replies: data.metrics?.reply_count || 0
-          },
-          url: data.url,
-          timestamp: new Date(data.created_at || Date.now()),
-          matched_rules: data.matched_rules?.map((r: any) => r.tag)
-        };
-        setLiveStreamEvents(prev => [newEvent, ...prev].slice(0, 100)); // Keep last 100
-      });
-
-      eventSource.addEventListener("analysis", (event) => {
-        const data = JSON.parse(event.data);
-        const newEvent: LiveStreamEvent = {
-          id: `analysis-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
-          type: 'analysis',
-          institution: data.institution,
-          risk_level: data.risk_level,
-          risk_type: data.risk_type,
-          urgency: data.urgency,
-          summary: data.summary,
-          text: data.tweet_text,
-          timestamp: new Date()
-        };
-        setLiveStreamEvents(prev => [newEvent, ...prev].slice(0, 100));
-      });
-
-      eventSource.addEventListener("spike", (event) => {
-        const data = JSON.parse(event.data);
-        const newEvent: LiveStreamEvent = {
-          id: `spike-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
-          type: 'spike',
-          institution: data.institution,
-          summary: `Volume spike detected! ${data.rate?.toFixed(1) || 0} tweets/min (threshold: ${data.threshold || 5})`,
-          timestamp: new Date()
-        };
-        setLiveStreamEvents(prev => [newEvent, ...prev].slice(0, 100));
-      });
-
-      eventSource.addEventListener("alert", (event) => {
-        const data = JSON.parse(event.data);
-        const newEvent: LiveStreamEvent = {
-          id: `alert-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
-          type: 'alert',
-          institution: data.institution || data.event?.institution,
-          alert_reason: data.alert_reason,
-          summary: data.message,
-          text: data.event?.text,
-          author: data.event?.author?.username ? `@${data.event.author.username}` : undefined,
-          url: data.event?.url,
-          grok_analysis: data.grok_analysis,
-          timestamp: new Date(data.timestamp)
-        };
-        setLiveStreamEvents(prev => [newEvent, ...prev].slice(0, 100));
-      });
-
-      eventSource.addEventListener("stats", (event) => {
-        const data = JSON.parse(event.data);
-        setLiveStreamStats(data);
-      });
-
-      eventSource.addEventListener("error", (event) => {
-        const data = event.data ? JSON.parse((event as any).data) : { message: "Stream error" };
-        setLiveStreamError(data.message);
-      });
-
-      eventSource.addEventListener("reconnecting", () => {
-        setLiveStreamEvents(prev => [...prev, {
-          id: `reconnect-${Date.now()}`,
-          type: 'reconnecting',
-          timestamp: new Date(),
-          summary: "Reconnecting to stream..."
-        }]);
-      });
-
-      eventSource.onerror = (error) => {
-        console.error("LiveStream SSE error:", error);
-        setLiveStreamError("Connection lost - attempting to reconnect");
-      };
-
-    } catch (error) {
-      console.error("Live stream error:", error);
-      setLiveStreamError(`Failed to start live stream: ${error}`);
-      setLiveStreamEvents(prev => [...prev, {
-        id: `error-${Date.now()}`,
-        type: 'error',
-        timestamp: new Date(),
-        summary: `Error: ${error}`
-      }]);
-      setLiveStreamActive(false);
-    }
-  }, [selectedInstitutions]);
+        summary: `Polling ${selectedInstitutions.length} institutions...`
+      } as LiveStreamEvent,
+      ...prev
+    ].slice(0, 100));
+    await pollTweets();
+  }, [selectedInstitutions, pollTweets]);
 
   // Stop live stream
   const stopLiveStream = useCallback(() => {
@@ -690,10 +666,13 @@ export default function Home() {
       liveStreamRef.current = null;
     }
     setLiveStreamActive(false);
-    // Clear events and reset stats when stopping
-    setLiveStreamEvents([]);
-    setLiveStreamStats(null);
-    setLiveStreamError(null);
+    setIsMonitoring(false);
+    setLiveStreamEvents(prev => [...prev, {
+      id: `disconnected-${Date.now()}`,
+      type: 'error',
+      timestamp: new Date(),
+      summary: "Stream disconnected"
+    }]);
   }, []);
 
   // Cleanup on unmount
@@ -704,6 +683,14 @@ export default function Home() {
       }
     };
   }, []);
+
+  // Polling interval when monitoring is enabled (fallback mode)
+  useEffect(() => {
+    if (!isMonitoring) return;
+    pollTweets();
+    const interval = setInterval(pollTweets, Math.max(monitoringInterval, 1) * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [isMonitoring, monitoringInterval, pollTweets]);
 
   // Fetch live stream stats periodically
   useEffect(() => {
@@ -780,7 +767,18 @@ export default function Home() {
     return `Analyze these financial institutions for risk: ${selectedInstitutions.join(", ")}. For each one, fetch market sentiment and send alerts for any HIGH or MEDIUM risk findings.`;
   };
 
+  const handleQuickAnalysis = useCallback(async () => {
+    if (selectedInstitutions.length === 0) return;
+    // Allow a new batch even if a prior stream flag was set
+    setIsStreaming(false);
+    for (const inst of selectedInstitutions) {
+      await streamAnalysis(inst);
+    }
+  }, [selectedInstitutions, streamAnalysis]);
+
   return (
+    <div className="relative">
+      <ToastContainer />
     <div className="flex h-screen bg-gradient-to-br from-slate-900 to-slate-800">
       {/* Sidebar - Institution Selection */}
       <aside className={`${showSetup ? 'w-80' : 'w-0'} transition-all duration-300 overflow-hidden bg-slate-800/50 border-r border-slate-700`}>
@@ -827,19 +825,21 @@ export default function Home() {
                   <button
                     key={inst}
                     onClick={() => toggleInstitution(inst)}
-                    className={`px-2.5 py-1 text-xs rounded-full transition-all ${selectedInstitutions.includes(inst)
-                      ? 'bg-indigo-600 text-white'
-                      : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-                      } ${liveResults[inst] ? 'ring-2 ring-green-400' : ''}`}
+                    className={`px-2.5 py-1 text-xs rounded-full transition-all ${
+                      selectedInstitutions.includes(inst)
+                        ? 'bg-indigo-600 text-white'
+                        : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                    } ${liveResults[inst] ? 'ring-2 ring-green-400' : ''}`}
                   >
                     {inst}
                     {liveResults[inst] && (
-                      <span className={`ml-1 ${liveResults[inst].risk_level === 'HIGH' ? 'text-red-300' :
+                      <span className={`ml-1 ${
+                        liveResults[inst].risk_level === 'HIGH' ? 'text-red-300' :
                         liveResults[inst].risk_level === 'MEDIUM' ? 'text-yellow-300' :
-                          'text-green-300'
-                        }`}>
+                        'text-green-300'
+                      }`}>
                         {liveResults[inst].risk_level === 'HIGH' ? '!' :
-                          liveResults[inst].risk_level === 'MEDIUM' ? '?' : ''}
+                         liveResults[inst].risk_level === 'MEDIUM' ? '?' : ''}
                       </span>
                     )}
                   </button>
@@ -857,10 +857,10 @@ export default function Home() {
               </div>
               {liveStreamStats && (
                 <div className="grid grid-cols-2 gap-2 text-xs text-emerald-300 mt-2">
-                  <div>Tweets: {liveStreamStats.stats?.tweets_processed || 0}</div>
-                  <div>Analyzed: {liveStreamStats.stats?.analyses_performed || 0}</div>
-                  <div>Spikes: {liveStreamStats.stats?.spikes_detected || 0}</div>
-                  <div>Rules: {liveStreamStats.stats?.active_rules || 0}</div>
+                  <div>Tweets: {liveStreamStats.tweets_processed || 0}</div>
+                  <div>Analyzed: {liveStreamStats.analyses_performed || 0}</div>
+                  <div>Spikes: {liveStreamStats.spikes_detected || 0}</div>
+                  <div>Rules: {liveStreamStats.active_rules || 0}</div>
                 </div>
               )}
               {liveStreamError && (
@@ -890,12 +890,14 @@ export default function Home() {
               <button
                 onClick={() => setIsMonitoring(!isMonitoring)}
                 disabled={selectedInstitutions.length === 0}
-                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${isMonitoring ? 'bg-green-600' : 'bg-slate-600'
-                  } ${selectedInstitutions.length === 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  isMonitoring ? 'bg-green-600' : 'bg-slate-600'
+                } ${selectedInstitutions.length === 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
                 <span
-                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${isMonitoring ? 'translate-x-6' : 'translate-x-1'
-                    }`}
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                    isMonitoring ? 'translate-x-6' : 'translate-x-1'
+                  }`}
                 />
               </button>
             </div>
@@ -907,117 +909,25 @@ export default function Home() {
                 onChange={(e) => setMonitoringInterval(Number(e.target.value))}
                 className="w-full bg-slate-700 text-white text-sm rounded px-3 py-2 border border-slate-600"
               >
-                <option value={1}>1 minute</option>
+                <option value={1}>1 minute (SSE)</option>
                 <option value={5}>5 minutes</option>
                 <option value={10}>10 minutes</option>
                 <option value={15}>15 minutes</option>
                 <option value={30}>30 minutes</option>
                 <option value={60}>1 hour</option>
-                <option value={360}>6 hours</option>
-                <option value={720}>12 hours</option>
-                <option value={1440}>Daily (24 hours)</option>
-                <option value={10080}>Weekly</option>
               </select>
             </div>
 
             {isMonitoring && (
-              <div className="space-y-2">
-                <div className="text-xs text-green-400 flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
-                  Monitoring {selectedInstitutions.length} institutions
-                </div>
-                {streamingInstitution && (
-                  <div className="text-xs text-blue-400 flex items-center gap-2">
-                    <div className="w-3 h-3 border border-blue-400 border-t-transparent rounded-full animate-spin"></div>
-                    Analyzing: {streamingInstitution}
-                  </div>
-                )}
-                {nextCheckTime && !streamingInstitution && (
-                  <div className="text-xs text-slate-400">
-                    Next check: {nextCheckTime.toLocaleTimeString()}
-                  </div>
-                )}
+              <div className="text-xs text-green-400 flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
+                Monitoring {selectedInstitutions.length} institutions
               </div>
             )}
 
             {lastMonitorTime && (
               <div className="text-xs text-slate-500 mt-2">
                 Last check: {lastMonitorTime.toLocaleTimeString()}
-              </div>
-            )}
-
-            {/* Interval info for longer periods */}
-            {monitoringInterval >= 360 && (
-              <div className="text-xs text-slate-500 mt-1">
-                {monitoringInterval === 360 && "Every 6 hours"}
-                {monitoringInterval === 720 && "Every 12 hours"}
-                {monitoringInterval === 1440 && "Once daily"}
-                {monitoringInterval === 10080 && "Once weekly"}
-              </div>
-            )}
-          </div>
-
-          {/* Analysis Settings */}
-          <div className="mt-6 pt-4 border-t border-slate-700">
-            <h3 className="text-sm font-medium text-white mb-3">Analysis Settings</h3>
-
-            {/* Time Period Selector */}
-            <div className="mb-3">
-              <label className="text-sm text-slate-400 block mb-1">Look back</label>
-              <select
-                value={hoursBack}
-                onChange={(e) => setHoursBack(Number(e.target.value))}
-                className="w-full bg-slate-700 text-white text-sm rounded px-3 py-2 border border-slate-600"
-              >
-                <option value={1}>Last 1 hour</option>
-                <option value={6}>Last 6 hours</option>
-                <option value={12}>Last 12 hours</option>
-                <option value={24}>Last 24 hours (default)</option>
-                <option value={48}>Last 2 days</option>
-                <option value={72}>Last 3 days</option>
-                <option value={168}>Last 7 days (max)</option>
-              </select>
-            </div>
-
-            {/* Analysis Mode Indicator */}
-            {selectedInstitutions.length > 0 && (
-              <div className="mb-3">
-                <button
-                  onClick={async () => {
-                    try {
-                      const res = await fetch(`http://localhost:8000/analyze/mode/${selectedInstitutions[0]}`);
-                      const data = await res.json();
-                      setAnalysisMode(data);
-                    } catch (e) {
-                      console.error('Failed to fetch mode:', e);
-                    }
-                  }}
-                  className="w-full bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs py-2 px-3 rounded transition-colors text-left"
-                >
-                  Check Analysis Mode
-                </button>
-
-                {analysisMode && (
-                  <div className={`mt-2 p-2 rounded text-xs ${
-                    analysisMode.mode === 'stateful'
-                      ? 'bg-green-900/30 border border-green-700/50'
-                      : 'bg-blue-900/30 border border-blue-700/50'
-                  }`}>
-                    <div className="font-medium text-white mb-1">
-                      Mode: {analysisMode.mode === 'stateful' ? '✓ Stateful (Responses API)' : '○ Direct (X API)'}
-                    </div>
-                    {analysisMode.session_active && (
-                      <div className="text-green-300 text-[10px]">
-                        Session Active • Delta updates available
-                      </div>
-                    )}
-                    {!analysisMode.session_active && analysisMode.mode === 'stateful' && (
-                      <div className="text-yellow-300 text-[10px]">
-                        No session yet • Run analysis to start
-                      </div>
-                    )}
-                  </div>
-                )}
               </div>
             )}
           </div>
@@ -1027,35 +937,38 @@ export default function Home() {
             <div className="mt-4 space-y-2">
               {/* Live Stream Button - Primary Action */}
               <button
-                onClick={() => liveStreamActive ? stopLiveStream() : startLiveStream()}
-                className={`w-full ${liveStreamActive
+                onClick={() => liveStreamActive || isMonitoring ? stopLiveStream() : startLiveStream()}
+                className={`w-full ${(liveStreamActive || isMonitoring)
                   ? 'bg-red-600 hover:bg-red-700'
                   : 'bg-emerald-600 hover:bg-emerald-700'} text-white text-sm py-2.5 px-4 rounded-lg transition-colors flex items-center justify-center gap-2 font-medium`}
               >
-                {liveStreamActive ? (
+                {(liveStreamActive || isMonitoring) ? (
                   <>
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
                     </svg>
-                    Stop Live Stream
+                    Stop Monitoring
                   </>
                 ) : (
                   <>
                     <span className="w-3 h-3 rounded-full bg-white animate-pulse"></span>
-                    Start Live Stream
+                    Start Monitoring (Polling)
                   </>
                 )}
               </button>
 
               <button
-                onClick={() => {
-                  if (selectedInstitutions.length > 0 && !isStreaming) {
-                    streamAnalysis(selectedInstitutions[0]);
-                  }
-                }}
-                disabled={isStreaming}
-                className={`w-full ${isStreaming ? 'bg-slate-600 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'} text-white text-sm py-2 px-4 rounded-lg transition-colors flex items-center justify-center gap-2`}
+                onClick={() => pollTweets()}
+                className="w-full bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm py-2 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
+              >
+                Poll Now
+              </button>
+
+              <button
+                onClick={handleQuickAnalysis}
+                disabled={isStreaming || selectedInstitutions.length === 0}
+                className={`w-full ${(isStreaming || selectedInstitutions.length === 0) ? 'bg-slate-600 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'} text-white text-sm py-2 px-4 rounded-lg transition-colors flex items-center justify-center gap-2`}
               >
                 {isStreaming ? (
                   <>
@@ -1068,66 +981,6 @@ export default function Home() {
                   </>
                 )}
               </button>
-
-              {/* Continue Analysis - Delta Updates */}
-              {analysisMode?.session_active && (
-                <button
-                  onClick={async () => {
-                    if (selectedInstitutions.length === 0 || isStreaming) return;
-
-                    setIsStreaming(true);
-                    setStreamingInstitution(selectedInstitutions[0]);
-                    setStreamStatus('Fetching delta updates...');
-
-                    try {
-                      const res = await fetch('http://localhost:8000/analyze/continue', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                          institution: selectedInstitutions[0],
-                          follow_up: `Any new developments in the last ${hoursBack} hours?`
-                        })
-                      });
-
-                      const data = await res.json();
-                      setStreamStatus('Delta analysis complete');
-
-                      // Add result to streaming results
-                      setStreamingResults(prev => [
-                        ...prev,
-                        {
-                          id: `delta-${Date.now()}`,
-                          institution: selectedInstitutions[0],
-                          analysis: data.analysis,
-                          timestamp: new Date()
-                        }
-                      ]);
-                    } catch (error) {
-                      setStreamStatus(`Error: ${error}`);
-                    } finally {
-                      setIsStreaming(false);
-                      setStreamingInstitution(null);
-                    }
-                  }}
-                  disabled={isStreaming}
-                  className={`w-full ${isStreaming ? 'bg-slate-600 cursor-not-allowed' : 'bg-purple-600 hover:bg-purple-700'} text-white text-sm py-2 px-4 rounded-lg transition-colors flex items-center justify-center gap-2`}
-                >
-                  {isStreaming ? (
-                    <>
-                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                      Getting updates...
-                    </>
-                  ) : (
-                    <>
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                      </svg>
-                      Continue Analysis (Delta)
-                    </>
-                  )}
-                </button>
-              )}
-
               <button
                 onClick={() => {
                   const prompt = getMonitoringPrompt();
@@ -1155,7 +1008,7 @@ export default function Home() {
       {/* Main Content */}
       <div className="flex-1 flex flex-col">
         {/* Header */}
-        <header className="bg-slate-800/50 backdrop-blur border-b border-slate-700 px-6 py-4">
+        <header className="bg-slate-800/50 backdrop-blur border-b border-slate-700 px-6 py-4 relative z-50">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <button
@@ -1177,6 +1030,54 @@ export default function Home() {
               </div>
             </div>
             <div className="flex items-center gap-4">
+              {/* Phase 3: Header Actions */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowHistory(!showHistory)}
+                  className="p-2 hover:bg-slate-700 rounded-lg transition-colors relative"
+                  title="View History"
+                >
+                  <svg className="w-5 h-5 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </button>
+                <button
+                  onClick={() => setShowSettings(!showSettings)}
+                  className="p-2 hover:bg-slate-700 rounded-lg transition-colors"
+                  title="Settings"
+                >
+                  <svg className="w-5 h-5 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                </button>
+                <button
+                  onClick={() => setShowAlerts(!showAlerts)}
+                  className="p-2 hover:bg-slate-700 rounded-lg transition-colors relative"
+                  title="Alerts"
+                >
+                  <svg className="w-5 h-5 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                  {activeAlerts.length > 0 && activeAlerts.filter(a => !a.read).length > 0 && (
+                    <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full text-xs flex items-center justify-center text-white font-bold">
+                      {activeAlerts.filter(a => !a.read).length}
+                    </span>
+                  )}
+                </button>
+                <button
+                  onClick={() => setShowSidePanel(!showSidePanel)}
+                  className="p-2 hover:bg-slate-700 rounded-lg transition-colors relative bg-blue-600/20 hover:bg-blue-600/30"
+                  title="Open Chat Assistant"
+                >
+                  <svg className="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                  </svg>
+                  {showSidePanel && (
+                    <span className="absolute -top-1 -right-1 w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
+                  )}
+                </button>
+              </div>
               {selectedInstitutions.length > 0 && (
                 <span className="text-sm text-slate-400">
                   Watching: <span className="text-white">{selectedInstitutions.length}</span> institutions
@@ -1204,302 +1105,117 @@ export default function Home() {
         </header>
 
         {/* Chat Interface - Results now appear inline in chat */}
-        <main className="flex-1 overflow-hidden relative flex flex-col">
-          {/* Live Stream Panel - Real-time filtered stream events */}
-          {(liveStreamActive || liveStreamEvents.length > 0) && showLivePanel && (
-            <div className="bg-slate-900/80 border-b border-emerald-700/50 max-h-[45vh] flex flex-col">
-              {/* Panel Header */}
-              <div className="flex items-center justify-between p-3 bg-emerald-900/30 border-b border-emerald-700/30">
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-2">
-                    {liveStreamActive ? (
-                      <span className="w-3 h-3 rounded-full bg-emerald-400 animate-ping"></span>
-                    ) : (
-                      <span className="w-3 h-3 rounded-full bg-slate-500"></span>
-                    )}
-                    <h3 className="text-sm font-semibold text-white">
-                      Live Stream {liveStreamActive ? '(Active)' : '(Stopped)'}
-                    </h3>
-                  </div>
-                  {liveStreamStats && (
-                    <div className="flex gap-3 text-xs text-emerald-300">
-                      <span>{liveStreamStats.stats?.tweets_processed || 0} tweets</span>
-                      <span>{liveStreamStats.stats?.analyses_performed || 0} analyzed</span>
-                      {(liveStreamStats.stats?.spikes_detected || 0) > 0 && (
-                        <span className="text-yellow-400">{liveStreamStats.stats?.spikes_detected} spikes</span>
-                      )}
-                    </div>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setLiveStreamEvents([])}
-                    className="text-xs text-slate-400 hover:text-white px-2 py-1 rounded hover:bg-slate-700"
-                  >
-                    Clear
-                  </button>
-                  <button
-                    onClick={() => setShowLivePanel(false)}
-                    className="text-slate-400 hover:text-white p-1 rounded hover:bg-slate-700"
-                  >
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
+        <main
+          className="flex-1 min-h-0 overflow-y-auto relative flex flex-col"
+          style={{
+            marginRight: showLivePanel ? '380px' : '0',
+            transition: 'margin-right 0.3s ease',
+          }}
+        >
+          {/* Dashboard Overview */}
+          <div className="px-6 pt-6 pb-4">
+            <DashboardOverview
+              {...dashboardStats}
+              isLoading={isStreaming && streamingResults.length === 0}
+            />
+          </div>
+
+          {/* Phase 2: Data Visualization Charts */}
+          {streamingResults.length > 0 && (
+            <div className="px-6 pb-4 space-y-6">
+              {/* Time Range Selector */}
+              <div className="flex items-center justify-end">
+                <TimeRangeSelector value={timeRange} onChange={setTimeRange} />
               </div>
 
-              {/* Live Events Feed */}
-              <div className="flex-1 overflow-y-auto p-3 space-y-2">
-                {liveStreamEvents.length === 0 ? (
-                  <div className="text-center text-slate-500 py-8">
-                    <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-slate-800 flex items-center justify-center">
-                      <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                      </svg>
-                    </div>
-                    <p className="text-sm">Waiting for live tweets...</p>
-                    <p className="text-xs mt-1">Tweets matching your portfolio will appear here</p>
-                  </div>
-                ) : (
-                  liveStreamEvents.map((event) => (
-                    <div
-                      key={event.id}
-                      className={`rounded-lg p-3 text-sm ${
-                        event.type === 'connected' ? 'bg-emerald-900/40 border border-emerald-700/50' :
-                        event.type === 'reconnecting' ? 'bg-yellow-900/40 border border-yellow-700/50' :
-                        event.type === 'error' ? 'bg-red-900/40 border border-red-700/50' :
-                        event.type === 'spike' ? 'bg-orange-900/40 border border-orange-700/50' :
-                        event.type === 'alert' ? (
-                          event.alert_reason === 'high_urgency'
-                            ? 'bg-red-900/60 border-2 border-red-600/70 shadow-lg shadow-red-900/50'
-                            : 'bg-yellow-900/60 border-2 border-yellow-600/70 shadow-lg shadow-yellow-900/50'
-                        ) :
-                        event.type === 'analysis' ? (
-                          event.risk_level === 'HIGH' ? 'bg-red-900/40 border border-red-700/50' :
-                          event.risk_level === 'MEDIUM' ? 'bg-yellow-900/40 border border-yellow-700/50' :
-                          'bg-green-900/40 border border-green-700/50'
-                        ) :
-                        'bg-slate-800/60 border border-slate-700/50'
-                      }`}
-                    >
-                      {/* Event Header */}
-                      <div className="flex items-center justify-between mb-1">
-                        <div className="flex items-center gap-2">
-                          {event.type === 'tweet' && (
-                            <>
-                              <svg className="w-4 h-4 text-slate-400" fill="currentColor" viewBox="0 0 24 24">
-                                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
-                              </svg>
-                              <span className="font-medium text-slate-200">
-                                {event.author}
-                                {event.author_verified && <span className="ml-1 text-blue-400">✓</span>}
-                              </span>
-                              {event.institution && (
-                                <span className="text-xs px-1.5 py-0.5 bg-indigo-900/50 text-indigo-300 rounded">
-                                  {event.institution}
-                                </span>
-                              )}
-                            </>
-                          )}
-                          {event.type === 'analysis' && (
-                            <>
-                              <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-                                event.risk_level === 'HIGH' ? 'bg-red-600 text-white' :
-                                event.risk_level === 'MEDIUM' ? 'bg-yellow-600 text-white' :
-                                'bg-green-600 text-white'
-                              }`}>
-                                {event.risk_level} RISK
-                              </span>
-                              <span className="text-slate-300">{event.institution}</span>
-                              {event.risk_type && (
-                                <span className="text-xs text-slate-400">({event.risk_type})</span>
-                              )}
-                            </>
-                          )}
-                          {event.type === 'spike' && (
-                            <>
-                              <span className="px-2 py-0.5 bg-orange-600 text-white rounded text-xs font-medium">SPIKE</span>
-                              <span className="text-orange-300">{event.institution}</span>
-                            </>
-                          )}
-                          {event.type === 'alert' && (
-                            <>
-                              <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-                                event.alert_reason === 'high_urgency'
-                                  ? 'bg-red-600 text-white animate-pulse'
-                                  : 'bg-yellow-600 text-white'
-                              }`}>
-                                🚨 {event.alert_reason === 'high_urgency' ? 'HIGH URGENCY' : 'HIGH ENGAGEMENT'}
-                              </span>
-                              <span className="text-yellow-300">{event.institution}</span>
-                              {event.author && (
-                                <span className="text-xs text-slate-400">by {event.author}</span>
-                              )}
-                            </>
-                          )}
-                          {(event.type === 'connected' || event.type === 'reconnecting' || event.type === 'error') && (
-                            <span className={`text-xs ${
-                              event.type === 'connected' ? 'text-emerald-400' :
-                              event.type === 'reconnecting' ? 'text-yellow-400' :
-                              'text-red-400'
-                            }`}>
-                              {event.summary}
-                            </span>
-                          )}
-                        </div>
-                        <span className="text-xs text-slate-500">
-                          {event.timestamp.toLocaleTimeString()}
-                        </span>
-                      </div>
-
-                      {/* Tweet Text */}
-                      {event.text && (
-                        <p className="text-slate-300 text-sm mb-2 line-clamp-2">{event.text}</p>
-                      )}
-
-                      {/* Summary for analysis */}
-                      {event.type === 'analysis' && event.summary && (
-                        <p className="text-slate-300 text-sm mb-2">{event.summary}</p>
-                      )}
-
-                      {/* Grok Analysis for Alerts */}
-                      {event.type === 'alert' && event.grok_analysis && (
-                        <div className="mt-2 p-2 rounded bg-slate-700/50 border border-yellow-600/30">
-                          <div className="text-xs font-medium text-yellow-400 mb-1">🤖 Grok Analysis</div>
-                          {event.grok_analysis.risk_level && (
-                            <div className="mb-1">
-                              <span className={`text-xs font-medium ${
-                                event.grok_analysis.risk_level === 'HIGH' ? 'text-red-400' :
-                                event.grok_analysis.risk_level === 'MEDIUM' ? 'text-yellow-400' :
-                                'text-green-400'
-                              }`}>
-                                Risk: {event.grok_analysis.risk_level}
-                              </span>
-                            </div>
-                          )}
-                          {event.grok_analysis.summary && (
-                            <p className="text-slate-300 text-xs leading-relaxed">{event.grok_analysis.summary}</p>
-                          )}
-                          {event.grok_analysis.key_findings && event.grok_analysis.key_findings.length > 0 && (
-                            <ul className="mt-1 space-y-0.5">
-                              {event.grok_analysis.key_findings.slice(0, 2).map((finding: string, idx: number) => (
-                                <li key={idx} className="text-xs text-slate-400">• {finding}</li>
-                              ))}
-                            </ul>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Engagement & Actions */}
-                      {event.type === 'tweet' && (
-                        <div className="flex items-center justify-between text-xs">
-                          <div className="flex items-center gap-3 text-slate-500">
-                            {event.engagement && (
-                              <>
-                                <span>↻ {event.engagement.retweets}</span>
-                                <span>♥ {event.engagement.likes}</span>
-                                <span>💬 {event.engagement.replies}</span>
-                              </>
-                            )}
-                            {event.author_followers && (
-                              <span className="text-slate-600">{event.author_followers.toLocaleString()} followers</span>
-                            )}
-                          </div>
-                          {event.url && (
-                            <a
-                              href={event.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-blue-400 hover:text-blue-300 flex items-center gap-1"
-                            >
-                              View on X
-                              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                              </svg>
-                            </a>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ))
+              {/* Charts Grid */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {/* Trend Chart */}
+                {trendChartData.length > 0 && (
+                  <TrendChart
+                    timeRange={timeRange}
+                    data={trendChartData}
+                    showViralScore={true}
+                  />
                 )}
+
+                {/* Viral Score Comparison */}
+                {viralScoreChartData.length > 0 && (
+                  <ViralScoreChart data={viralScoreChartData} maxInstitutions={8} />
+                )}
+              </div>
+
+              {/* Comparison View */}
+              {comparisonData.length > 1 && (
+                <ComparisonView institutions={comparisonData} maxInstitutions={5} />
+              )}
+            </div>
+          )}
+
+          {/* Streaming Results Cards - Loading State */}
+          {isStreaming && streamingResults.length === 0 && (
+            <div className="px-6 pb-4">
+              <div className="space-y-4">
+                <RiskCardSkeleton />
+                <RiskCardSkeleton />
               </div>
             </div>
           )}
 
-          {/* Collapsed Live Panel Toggle */}
-          {!showLivePanel && (liveStreamActive || liveStreamEvents.length > 0) && (
-            <button
-              onClick={() => setShowLivePanel(true)}
-              className="bg-emerald-900/50 border-b border-emerald-700/50 px-4 py-2 flex items-center justify-center gap-2 hover:bg-emerald-900/70 transition-colors"
-            >
-              {liveStreamActive && <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>}
-              <span className="text-sm text-emerald-300">
-                Show Live Stream ({liveStreamEvents.length} events)
-              </span>
-              <svg className="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-              </svg>
-            </button>
-          )}
-
-          {/* Streaming Results Cards - Rendered above chat when available */}
+          {/* Analysis Results View - Main Content Area */}
           {streamingResults.length > 0 && (
-            <div className="bg-slate-800/50 border-b border-slate-700 p-4 max-h-[60vh] overflow-y-auto">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
-                  Live Analysis Results ({streamingResults.length})
-                </h3>
-                <button
-                  onClick={() => setStreamingResults([])}
-                  className="text-xs text-slate-400 hover:text-white px-2 py-1 rounded hover:bg-slate-700"
-                >
-                  Clear All
-                </button>
-              </div>
-              <div className="space-y-4">
-                {streamingResults.map((result) => {
-                  const analysis = result.analysis;
-                  // Parse evidence tweets from sample_posts - handle URLs in parentheses or standalone
-                  const evidenceTweets = analysis?.sample_posts?.slice(0, 3).map((post: string) => {
-                    // Match X/Twitter URLs - handle parentheses, brackets, and various formats
-                    const urlMatch = post.match(/https?:\/\/(?:x\.com|twitter\.com)\/(\w+)\/status\/(\d+)/);
+            <div className="px-6 pb-6">
+              <AnalysisResultsView
+                results={streamingResults.map(result => ({
+                  institution: result.institution,
+                  riskLevel: result.analysis?.risk_level || 'LOW',
+                  summary: result.analysis?.summary || 'No summary available',
+                  keyFindings: result.analysis?.key_findings,
+                  tweetCount: result.analysis?.tweet_count,
+                  viralScore: result.analysis?.viral_score,
+                  trendVelocity: result.analysis?.trend_velocity,
+                  evidenceTweets: result.analysis?.sample_posts?.slice(0, 3).map((post: string) => {
+                    const urlMatch = post.match(/https:\/\/x\.com\/(\w+)\/status\/\d+/);
                     const author = urlMatch ? `@${urlMatch[1]}` : 'Unknown';
-                    // Remove all URLs from text for cleaner display
-                    const text = post.replace(/https?:\/\/(?:x\.com|twitter\.com)\/\S+/g, '').replace(/[()[\]]/g, ' ').trim();
-                    // Construct clean URL
-                    const cleanUrl = urlMatch ? `https://x.com/${urlMatch[1]}/status/${urlMatch[2]}` : undefined;
+                    const text = post.replace(/https:\/\/x\.com\/\S+/g, '').trim();
                     return {
                       author,
                       text: text.slice(0, 200),
-                      url: cleanUrl,
-                      verified: post.includes('[verified]') || post.includes('✓') || post.includes('verified')
+                      url: urlMatch ? urlMatch[0] : undefined,
+                      verified: post.includes('[verified]') || post.includes('✓'),
                     };
-                  }) || [];
-
-                  return (
-                    <RiskAnalysisCard
-                      key={result.id}
-                      bankName={result.institution}
-                      riskLevel={analysis?.risk_level || 'LOW'}
-                      summary={analysis?.summary || 'No summary available'}
-                      keyFindings={analysis?.key_findings}
-                      confidence={analysis?.confidence}
-                      viralScore={analysis?.viral_score}
-                      trendVelocity={analysis?.trend_velocity}
-                      evidenceTweets={evidenceTweets}
-                      timestamp={result.timestamp}
-                    />
-                  );
-                })}
-              </div>
+                  }) || [],
+                  confidence: result.analysis?.confidence,
+                  timestamp: result.timestamp,
+                }))}
+                onClear={() => {
+                  setStreamingResults([]);
+                  toast.info("Results cleared");
+                }}
+              />
             </div>
           )}
+        </main>
 
+        {/* Live Stream Feed - Right Side (Always Visible) */}
+        <LiveStreamFeed
+          events={liveStreamEvents}
+          isActive={liveStreamActive}
+          stats={liveStreamStats}
+          selectedInstitutions={selectedInstitutions}
+          onClear={() => setLiveStreamEvents([])}
+          onClose={() => setShowLivePanel(false)}
+        />
+
+        {/* Side Panel - Chat Assistant */}
+        <SidePanel
+          isOpen={showSidePanel}
+          onClose={() => setShowSidePanel(false)}
+          title="Financial Sentinel"
+          showLivePanel={showLivePanel}
+        >
           <CopilotChat
-            className="flex-1 min-h-0"
+            className="h-full"
             labels={{
               title: "Financial Sentinel",
               initial: selectedInstitutions.length > 0
@@ -1509,13 +1225,12 @@ export default function Home() {
                 ? `Analyze ${selectedInstitutions.length} selected institutions...`
                 : "Ask me to analyze any financial institution...",
             }}
-            instructions={`You are the Financial Sentinel with SOPHISTICATED X API integration.
-
-${selectedInstitutions.length > 0 ? `The user has selected these institutions to monitor: ${selectedInstitutions.join(", ")}
-
-If the user says "analyze all", "check all", "monitor all", or similar, analyze ALL of their selected institutions.` : ''}
-
-## Your X API Integration
+            instructions={(() => {
+              const baseInstructions = "You are the Financial Sentinel with SOPHISTICATED X API integration.\n\n";
+              const institutionNote = selectedInstitutions.length > 0
+                ? `The user has selected these institutions to monitor: ${selectedInstitutions.join(", ")}\n\nIf the user says "analyze all", "check all", "monitor all", or similar, analyze ALL of their selected institutions.\n\n`
+                : "";
+              const restInstructions = `## Your X API Integration
 You use MULTIPLE X API ENDPOINTS for comprehensive analysis:
 1. /tweets/search/recent - Fetch tweets with full metadata
 2. /tweets/counts/recent - Detect volume trends and spikes
@@ -1544,9 +1259,11 @@ Include in your response:
 - Key findings WITH tweet URLs for verification
 - Evidence tweets from high-credibility sources
 
-Be concise. Cite your data source (X API + Grok) and include tweet URLs for traceability.`}
+Be concise. Cite your data source (X API + Grok) and include tweet URLs for traceability.`;
+              return baseInstructions + institutionNote + restInstructions;
+            })()}
           />
-        </main>
+        </SidePanel>
 
         {/* Footer */}
         <footer className="bg-slate-800/30 border-t border-slate-700 px-6 py-3">
@@ -1556,6 +1273,78 @@ Be concise. Cite your data source (X API + Grok) and include tweet URLs for trac
           </div>
         </footer>
       </div>
+      </div>
+
+      {/* Phase 3: Modals and Panels */}
+      {showSettings && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+            <SettingsPanel onClose={() => setShowSettings(false)} />
+          </div>
+        </div>
+      )}
+
+      {showHistory && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="bg-slate-800 rounded-xl p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-semibold text-white">Analysis History</h2>
+                <button
+                  onClick={() => setShowHistory(false)}
+                  className="text-slate-400 hover:text-white"
+                >
+                  ✕
+                </button>
+              </div>
+              <AnalysisHistory history={analysisHistory} onExport={handleExport} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAlerts && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="max-w-3xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="bg-slate-800 rounded-xl p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-semibold text-white">Alert Center</h2>
+                <button
+                  onClick={() => setShowAlerts(false)}
+                  className="text-slate-400 hover:text-white transition-colors"
+                >
+                  ✕
+                </button>
+              </div>
+              <AlertCenter
+                alerts={activeAlerts}
+                onMarkRead={(id) => {
+                  setReadAlerts((prev) => {
+                    // Create a new Set from the previous one and add the new id
+                    const newSet = new Set(prev);
+                    newSet.add(id);
+                    // Return a new Set instance to ensure React detects the change
+                    return new Set(Array.from(newSet));
+                  });
+                }}
+                onMarkAllRead={() => {
+                  const allIds = activeAlerts.map((a) => a.id);
+                  setReadAlerts(new Set(allIds));
+                }}
+                onDismiss={(id) => {
+                  setDismissedAlerts((prev) => {
+                    const newSet = new Set(prev);
+                    newSet.add(id);
+                    return new Set(Array.from(newSet));
+                  });
+                }}
+                filterRisk={alertFilter}
+                onFilterChange={setAlertFilter}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
