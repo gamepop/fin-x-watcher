@@ -11,9 +11,9 @@ ag-ui-adk>=0.0.7
 # OpenAI SDK (for Grok API - OpenAI-compatible)
 openai>=1.50.0
 
-# X API Client
-tweepy>=4.14.0
-requests>=2.31.0
+# X API Client - Official X Developer Kit
+xdk
+requests>=2.31.0  # kept for fallback/utilities
 
 # LiteLLM for ADK model routing
 litellm>=1.80.0
