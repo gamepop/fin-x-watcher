@@ -625,30 +625,19 @@ async def stream_monitor_events():
     Stream real-time events from the monitor via SSE.
 
     Returns Server-Sent Events for real-time monitoring:
+    - connected: Initial connection confirmation
     - tweet: New matching tweet detected
     - alert: High urgency event requiring attention
+    - heartbeat: Keep-alive ping
     - error: Stream error
-
-    Usage:
-    ```javascript
-    const eventSource = new EventSource('/monitor/stream');
-
-    eventSource.addEventListener('tweet', (e) => {
-        const data = JSON.parse(e.data);
-        console.log(`New tweet for ${data.institution}: ${data.text}`);
-    });
-
-    eventSource.addEventListener('alert', (e) => {
-        const alert = JSON.parse(e.data);
-        console.log(`ALERT: ${alert.message}`);
-    });
-    ```
     """
     global _stream_monitor
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
 
     if not _stream_monitor:
         async def error_stream():
-            yield f"event: error\ndata: {json.dumps({'error': 'Monitor not started. Call POST /monitor/start first.'})}\n\n"
+            yield f"event: error\ndata: {json.dumps({'error': 'Monitor not started. Call POST /monitor/sync first.'})}\n\n"
 
         return StreamingResponse(
             error_stream(),
@@ -656,9 +645,82 @@ async def stream_monitor_events():
         )
 
     async def generate_stream():
-        async for event in _stream_monitor.stream():
-            event_type = event.get("type", "message")
-            yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
+        # Send initial connected event immediately
+        connected_event = {
+            "type": "connected",
+            "institutions": list(_stream_monitor.monitored_institutions.keys()),
+            "rules_count": len(_stream_monitor.active_rules),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        yield f"event: connected\ndata: {json.dumps(connected_event)}\n\n"
+
+        # Run the blocking stream in a thread pool
+        executor = ThreadPoolExecutor(max_workers=1)
+        loop = asyncio.get_event_loop()
+
+        # Queue to pass events from thread to async generator
+        event_queue = asyncio.Queue()
+        stop_event = asyncio.Event()
+
+        def stream_worker():
+            """Worker that runs blocking stream and puts events in queue."""
+            try:
+                for post in _stream_monitor.x_client.stream_posts(
+                    backfill_minutes=0,
+                    include_user_data=True
+                ):
+                    if stop_event.is_set():
+                        break
+                    # Put event in queue (thread-safe)
+                    asyncio.run_coroutine_threadsafe(
+                        event_queue.put(post),
+                        loop
+                    )
+            except Exception as e:
+                asyncio.run_coroutine_threadsafe(
+                    event_queue.put({"type": "error", "error": str(e)}),
+                    loop
+                )
+
+        # Start stream worker in background
+        future = loop.run_in_executor(executor, stream_worker)
+
+        # Heartbeat counter
+        heartbeat_interval = 15  # seconds
+        last_heartbeat = datetime.now(timezone.utc)
+
+        try:
+            while True:
+                try:
+                    # Wait for event with timeout for heartbeat
+                    event = await asyncio.wait_for(
+                        event_queue.get(),
+                        timeout=heartbeat_interval
+                    )
+
+                    # Process the event
+                    if event.get("error"):
+                        yield f"event: error\ndata: {json.dumps(event)}\n\n"
+                    else:
+                        # Enrich with matched institution
+                        event["type"] = "tweet"
+                        yield f"event: tweet\ndata: {json.dumps(event)}\n\n"
+
+                except asyncio.TimeoutError:
+                    # Send heartbeat to keep connection alive
+                    heartbeat = {
+                        "type": "heartbeat",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "status": "waiting for tweets"
+                    }
+                    yield f"event: heartbeat\ndata: {json.dumps(heartbeat)}\n\n"
+
+        except asyncio.CancelledError:
+            stop_event.set()
+            raise
+        finally:
+            stop_event.set()
+            executor.shutdown(wait=False)
 
     return StreamingResponse(
         generate_stream(),
@@ -741,6 +803,87 @@ async def analyze_buffered_events():
 
     result = await _stream_monitor.analyze_buffered_events()
     return result
+
+
+class PortfolioSyncRequest(BaseModel):
+    """Request for syncing monitor with portfolio."""
+    institutions: List[str]
+
+
+@app.post("/monitor/sync")
+async def sync_monitor_with_portfolio(request: PortfolioSyncRequest):
+    """
+    Sync stream rules with user's portfolio selection.
+
+    This creates/updates stream rules to match the selected institutions,
+    removing rules for unselected institutions.
+
+    Request body:
+        institutions: List of institution names to monitor
+
+    Returns:
+        Sync status with added/removed institutions
+    """
+    global _stream_monitor
+
+    if not _stream_monitor:
+        _stream_monitor = StreamMonitor()
+
+    result = await _stream_monitor.sync_with_portfolio(request.institutions)
+    return result
+
+
+@app.delete("/monitor/rules")
+async def delete_all_stream_rules():
+    """
+    Delete all stream rules.
+
+    Useful for cleanup or resetting the monitor.
+    """
+    try:
+        x_client = XAPIClient()
+        result = x_client.delete_stream_rules(delete_all=True)
+        return result
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@app.get("/monitor/rules")
+async def get_stream_rules():
+    """Get current filtered stream rules."""
+    try:
+        x_client = XAPIClient()
+        rules = x_client.get_stream_rules()
+        return {
+            "rules": rules,
+            "count": len(rules) if rules and not rules[0].get("error") else 0,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@app.get("/monitor/stats")
+async def get_monitor_stats():
+    """
+    Get detailed monitoring statistics.
+
+    Returns volume stats, event counts, and connection health.
+    """
+    global _stream_monitor
+
+    if not _stream_monitor:
+        return {
+            "status": "not_running",
+            "stats": None
+        }
+
+    return {
+        "status": "running",
+        "stats": _stream_monitor.get_stats(),
+        "institutions": _stream_monitor.get_monitored_institutions(),
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
 
 
 # =============================================================================

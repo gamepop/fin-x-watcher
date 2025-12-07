@@ -400,11 +400,9 @@ class XAPIClient:
             Response with created rule IDs
         """
         try:
-            from xdk.stream.models import UpdateRulesRequest
-
-            add_rules = {"add": rules}
-            request_body = UpdateRulesRequest(**add_rules)
-            response = self.client.stream.update_rules(body=request_body)
+            # Pass dict directly - UpdateRulesRequest model doesn't work correctly
+            body = {"add": rules}
+            response = self.client.stream.update_rules(body=body)
 
             return {
                 "status": "success",
@@ -431,27 +429,174 @@ class XAPIClient:
         except Exception as e:
             return [{"error": str(e)}]
 
-    def stream_posts(self) -> Generator[Dict, None, None]:
+    def delete_stream_rules(self, rule_ids: List[str] = None, delete_all: bool = False) -> Dict:
         """
-        Stream posts in real-time using filtered stream.
+        Delete filtered stream rules.
 
-        Yields:
-            Dict with post data for each matching tweet
+        Args:
+            rule_ids: List of rule IDs to delete (optional)
+            delete_all: If True, deletes all rules
+
+        Returns:
+            Response with deletion status
         """
         try:
-            for post_response in self.client.stream.posts():
+            if delete_all:
+                # Get all existing rules first
+                existing = self.get_stream_rules()
+                if existing and not existing[0].get("error"):
+                    rule_ids = [r["id"] for r in existing if r.get("id")]
+
+            if not rule_ids:
+                return {"status": "no_rules", "deleted": 0}
+
+            # Pass dict directly - UpdateRulesRequest model doesn't work correctly
+            body = {"delete": {"ids": rule_ids}}
+            response = self.client.stream.update_rules(body=body)
+
+            return {
+                "status": "success",
+                "deleted": len(rule_ids),
+                "response": response.model_dump() if hasattr(response, 'model_dump') else dict(response)
+            }
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    def stream_posts(
+        self,
+        backfill_minutes: int = None,
+        include_user_data: bool = True
+    ) -> Generator[Dict, None, None]:
+        """
+        Stream posts in real-time using filtered stream with rich data.
+
+        Args:
+            backfill_minutes: Minutes of past data to backfill (max 5)
+            include_user_data: Include expanded user/author data
+
+        Yields:
+            Dict with enriched post data including engagement metrics
+        """
+        # Request rich tweet fields
+        tweet_fields = [
+            'id', 'text', 'created_at', 'author_id',
+            'public_metrics',  # retweets, likes, replies, quotes
+            'entities',        # hashtags, mentions, urls
+            'lang',
+            'possibly_sensitive'
+        ]
+
+        # Request user fields for author expansion
+        user_fields = [
+            'id', 'name', 'username',
+            'verified', 'verified_type',
+            'public_metrics',  # followers, following
+        ] if include_user_data else None
+
+        # Expand author_id to get full user object
+        expansions = ['author_id'] if include_user_data else None
+
+        try:
+            stream_kwargs = {
+                'tweet_fields': tweet_fields,
+            }
+            if expansions:
+                stream_kwargs['expansions'] = expansions
+            if user_fields:
+                stream_kwargs['user_fields'] = user_fields
+            if backfill_minutes:
+                stream_kwargs['backfill_minutes'] = min(backfill_minutes, 5)
+
+            for post_response in self.client.stream.posts(**stream_kwargs):
                 data = post_response.model_dump() if hasattr(post_response, 'model_dump') else dict(post_response)
+
                 if data.get('data'):
                     tweet = data['data']
-                    yield {
+
+                    # Extract public metrics
+                    metrics = tweet.get('public_metrics', {})
+                    total_engagement = (
+                        metrics.get('retweet_count', 0) +
+                        metrics.get('reply_count', 0) +
+                        metrics.get('like_count', 0) +
+                        metrics.get('quote_count', 0)
+                    )
+
+                    # Find author in includes
+                    author = None
+                    if data.get('includes', {}).get('users'):
+                        author_id = tweet.get('author_id')
+                        for user in data['includes']['users']:
+                            if user.get('id') == author_id:
+                                author = user
+                                break
+
+                    # Extract entities
+                    entities = tweet.get('entities', {})
+                    hashtags = [h.get('tag') for h in entities.get('hashtags', [])]
+                    mentions = [m.get('username') for m in entities.get('mentions', [])]
+
+                    # Build enriched response
+                    enriched = {
                         "id": tweet.get('id'),
                         "text": tweet.get('text'),
                         "created_at": tweet.get('created_at'),
                         "author_id": tweet.get('author_id'),
-                        "matching_rules": data.get('matching_rules', [])
+                        "lang": tweet.get('lang'),
+                        "possibly_sensitive": tweet.get('possibly_sensitive', False),
+                        "matching_rules": data.get('matching_rules', []),
+                        # Engagement metrics
+                        "metrics": {
+                            "retweets": metrics.get('retweet_count', 0),
+                            "replies": metrics.get('reply_count', 0),
+                            "likes": metrics.get('like_count', 0),
+                            "quotes": metrics.get('quote_count', 0),
+                            "total_engagement": total_engagement
+                        },
+                        # Entities
+                        "hashtags": hashtags,
+                        "mentions": mentions,
                     }
+
+                    # Add author data if available
+                    if author:
+                        author_metrics = author.get('public_metrics', {})
+                        enriched["author"] = {
+                            "id": author.get('id'),
+                            "username": author.get('username'),
+                            "name": author.get('name'),
+                            "verified": author.get('verified', False),
+                            "verified_type": author.get('verified_type'),
+                            "followers": author_metrics.get('followers_count', 0),
+                            "following": author_metrics.get('following_count', 0),
+                        }
+                        # Calculate credibility score
+                        enriched["author"]["credibility_score"] = self._calculate_credibility(
+                            author_metrics.get('followers_count', 0),
+                            author.get('verified', False),
+                            author.get('verified_type')
+                        )
+
+                    # Build tweet URL
+                    if enriched.get("author", {}).get("username"):
+                        enriched["url"] = f"https://x.com/{enriched['author']['username']}/status/{tweet.get('id')}"
+
+                    yield enriched
+
         except Exception as e:
-            yield {"error": str(e)}
+            yield {"error": str(e), "type": "stream_error"}
+
+    def _calculate_credibility(self, followers: int, verified: bool, verified_type: str) -> float:
+        """Calculate author credibility score."""
+        score = min(followers / 1000, 50)  # Max 50 from followers
+        if verified:
+            if verified_type == "business":
+                score += 40
+            elif verified_type == "government":
+                score += 50
+            else:
+                score += 25
+        return round(score, 1)
 
     # -------------------------------------------------------------------------
     # Combined Institution Analysis (Uses All Endpoints)
@@ -1097,6 +1242,79 @@ Provide your risk assessment applying {inst_type.replace('_', ' ')} analysis con
                 "key_findings": [],
                 "tweet_count": len(tweets),
                 "viral_score": round(viral_score, 1),
+                "error": str(e)
+            }
+
+    def analyze_single_tweet(
+        self,
+        institution: str,
+        tweet_text: str,
+        metrics: Dict[str, int],
+        model: str = "grok-3-fast"
+    ) -> Dict[str, Any]:
+        """
+        Analyze a single tweet for quick risk assessment (used by stream monitor).
+
+        Args:
+            institution: Institution name the tweet mentions
+            tweet_text: The tweet text content
+            metrics: Engagement metrics (retweet_count, reply_count, like_count, quote_count)
+            model: Grok model to use
+
+        Returns:
+            Quick risk assessment for the single tweet
+        """
+        total_engagement = sum(metrics.values())
+
+        system_prompt = """You are a financial risk analyst. Analyze this single tweet about a financial institution for risk indicators.
+
+Respond in JSON format:
+{
+    "risk_level": "HIGH" | "MEDIUM" | "LOW",
+    "risk_type": "crisis" | "complaint" | "concern" | "positive" | "neutral",
+    "summary": "Brief 1-sentence assessment",
+    "urgency": 1-10,
+    "action_needed": true | false
+}"""
+
+        user_prompt = f"""Analyze this tweet about {institution}:
+
+"{tweet_text}"
+
+Engagement metrics:
+- Retweets: {metrics.get('retweet_count', 0)}
+- Replies: {metrics.get('reply_count', 0)}
+- Likes: {metrics.get('like_count', 0)}
+- Quotes: {metrics.get('quote_count', 0)}
+- Total engagement: {total_engagement}
+
+Assess the risk level considering both content and virality potential."""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.1,
+                max_tokens=200,
+                response_format={"type": "json_object"}
+            )
+
+            result = json.loads(response.choices[0].message.content)
+            result["institution"] = institution
+            result["engagement"] = total_engagement
+            result["analyzed_at"] = datetime.now(timezone.utc).isoformat()
+            return result
+
+        except Exception as e:
+            return {
+                "risk_level": "UNKNOWN",
+                "risk_type": "error",
+                "summary": f"Analysis failed: {str(e)}",
+                "urgency": 0,
+                "action_needed": False,
                 "error": str(e)
             }
 
@@ -2000,18 +2218,18 @@ async def stream_institution_updates(
 
 class StreamMonitor:
     """
-    Real-time monitoring using xdk filtered stream.
+    Enhanced real-time monitoring using xdk filtered stream.
 
     Features:
-    - Monitors multiple institutions simultaneously
-    - Automatic rule management for filtered stream
-    - Real-time risk detection with instant alerts
-    - Integrates with GrokAnalysisClient for deep analysis
+    - Rich tweet data with engagement metrics and author info
+    - Automatic rule sync with user portfolio
+    - Real-time risk detection with instant Grok analysis
+    - Auto-reconnect with exponential backoff
+    - Volume spike detection
 
     Usage:
         monitor = StreamMonitor()
-        monitor.add_institution("Coinbase")
-        monitor.add_institution("Chase")
+        await monitor.sync_with_portfolio(["Coinbase", "Chase"])
 
         async for event in monitor.stream():
             print(f"New event: {event}")
@@ -2019,30 +2237,41 @@ class StreamMonitor:
 
     def __init__(self):
         self.x_client = XAPIClient()
+        self.grok_client = None
         self.monitored_institutions: Dict[str, Dict] = {}
         self.active_rules: List[Dict] = []
         self.event_buffer: List[Dict] = []
         self._running = False
+        self._reconnect_attempts = 0
+        self._max_reconnect_attempts = 5
+        # Volume tracking for spike detection
+        self._volume_tracker: Dict[str, List[datetime]] = {}
+        self._volume_window_minutes = 5
+        # High-engagement threshold for instant Grok analysis
+        self._high_engagement_threshold = 50
+        # Event deduplication
+        self._seen_tweet_ids: set = set()
+        self._max_seen_ids = 10000
+
+    def _init_grok(self):
+        """Lazy initialize Grok client."""
+        if self.grok_client is None:
+            try:
+                self.grok_client = GrokClient()
+            except:
+                pass
 
     def add_institution(self, institution: str) -> Dict:
-        """
-        Add an institution to monitor.
-
-        Args:
-            institution: Name of the institution to monitor
-
-        Returns:
-            Dict with status and rule details
-        """
+        """Add an institution to monitor with optimized rule."""
         inst_context = get_institution_context(institution)
         inst_type = inst_context["institution_type"]
         risk_keywords = inst_context["risk_keywords"][:6]
 
-        # Build stream rule for this institution
+        # Build optimized stream rule
+        # Include institution name + key risk terms
         keyword_clause = " OR ".join(risk_keywords[:4])
-        rule_value = f'"{institution}" ({keyword_clause})'
+        rule_value = f'"{institution}" ({keyword_clause}) -is:retweet lang:en'
 
-        # Store monitored institution
         self.monitored_institutions[institution.lower()] = {
             "name": institution,
             "type": inst_type,
@@ -2050,6 +2279,9 @@ class StreamMonitor:
             "risk_keywords": risk_keywords,
             "added_at": datetime.now(timezone.utc).isoformat()
         }
+
+        # Initialize volume tracker
+        self._volume_tracker[institution.lower()] = []
 
         return {
             "status": "added",
@@ -2063,12 +2295,55 @@ class StreamMonitor:
         inst_key = institution.lower()
         if inst_key in self.monitored_institutions:
             del self.monitored_institutions[inst_key]
+            if inst_key in self._volume_tracker:
+                del self._volume_tracker[inst_key]
             return {"status": "removed", "institution": institution}
         return {"status": "not_found", "institution": institution}
 
     def get_monitored_institutions(self) -> List[Dict]:
-        """Get list of currently monitored institutions."""
-        return list(self.monitored_institutions.values())
+        """Get list of currently monitored institutions with stats."""
+        result = []
+        for inst_key, inst_data in self.monitored_institutions.items():
+            stats = inst_data.copy()
+            # Add volume stats
+            if inst_key in self._volume_tracker:
+                recent = [t for t in self._volume_tracker[inst_key]
+                         if t > datetime.now(timezone.utc) - timedelta(minutes=self._volume_window_minutes)]
+                stats["tweets_last_5min"] = len(recent)
+            result.append(stats)
+        return result
+
+    async def sync_with_portfolio(self, institutions: List[str]) -> Dict:
+        """
+        Sync stream rules with user's portfolio selection.
+
+        Removes rules for institutions no longer in portfolio,
+        adds rules for new institutions.
+        """
+        current = set(self.monitored_institutions.keys())
+        target = set(inst.lower() for inst in institutions)
+
+        # Remove institutions no longer in portfolio
+        to_remove = current - target
+        for inst in to_remove:
+            self.remove_institution(inst)
+
+        # Add new institutions
+        to_add = target - current
+        for inst in institutions:
+            if inst.lower() in to_add:
+                self.add_institution(inst)
+
+        # Apply rules to stream
+        result = await self.setup_stream(clear_existing=True)
+
+        return {
+            "status": "synced",
+            "added": list(to_add),
+            "removed": list(to_remove),
+            "total_monitored": len(self.monitored_institutions),
+            "setup_result": result
+        }
 
     def build_stream_rules(self) -> List[Dict]:
         """Build stream rules for all monitored institutions."""
@@ -2080,12 +2355,12 @@ class StreamMonitor:
             })
         return rules
 
-    async def setup_stream(self) -> Dict:
+    async def setup_stream(self, clear_existing: bool = True) -> Dict:
         """
         Set up filtered stream rules for monitored institutions.
 
-        Returns:
-            Dict with setup status
+        Args:
+            clear_existing: If True, clears all existing rules first
         """
         rules = self.build_stream_rules()
 
@@ -2096,15 +2371,17 @@ class StreamMonitor:
             }
 
         try:
-            # Clear existing rules first
-            existing_rules = self.x_client.get_stream_rules()
-            if existing_rules and not existing_rules[0].get("error"):
-                # Delete existing rules (would need delete endpoint)
-                pass
+            # Clear existing rules if requested
+            if clear_existing:
+                delete_result = self.x_client.delete_stream_rules(delete_all=True)
+                if delete_result.get("status") == "error":
+                    # Log but continue - might not have any rules
+                    pass
 
             # Add new rules
             result = self.x_client.setup_stream_rules(rules)
             self.active_rules = rules
+            self._reconnect_attempts = 0  # Reset on successful setup
 
             return {
                 "status": "success",
@@ -2119,29 +2396,89 @@ class StreamMonitor:
                 "error": str(e)
             }
 
-    async def stream(self) -> Generator[Dict, None, None]:
+    def _check_volume_spike(self, institution: str) -> Dict:
+        """Check if there's a volume spike for an institution."""
+        inst_key = institution.lower()
+        if inst_key not in self._volume_tracker:
+            return {"is_spiking": False}
+
+        now = datetime.now(timezone.utc)
+        window = timedelta(minutes=self._volume_window_minutes)
+
+        # Clean old entries
+        self._volume_tracker[inst_key] = [
+            t for t in self._volume_tracker[inst_key] if t > now - window
+        ]
+
+        # Add current
+        self._volume_tracker[inst_key].append(now)
+
+        count = len(self._volume_tracker[inst_key])
+        # Spike if more than 10 tweets in 5 minutes
+        is_spiking = count > 10
+
+        return {
+            "is_spiking": is_spiking,
+            "tweets_in_window": count,
+            "window_minutes": self._volume_window_minutes
+        }
+
+    async def stream(self, backfill_minutes: int = 0) -> Generator[Dict, None, None]:
         """
-        Stream real-time events from filtered stream.
+        Stream real-time events with enriched data and Grok analysis.
+
+        Args:
+            backfill_minutes: Minutes of past data to backfill (0-5)
 
         Yields:
-            Dict with tweet data and risk indicators
+            Dict with enriched tweet data, risk indicators, and optional Grok analysis
         """
         self._running = True
+        self._init_grok()
 
         try:
-            for post in self.x_client.stream_posts():
+            for post in self.x_client.stream_posts(
+                backfill_minutes=backfill_minutes,
+                include_user_data=True
+            ):
                 if not self._running:
                     break
 
+                # Handle errors with reconnect logic
                 if post.get("error"):
-                    yield {
-                        "type": "error",
-                        "error": post["error"],
-                        "timestamp": datetime.now(timezone.utc).isoformat()
-                    }
-                    continue
+                    self._reconnect_attempts += 1
+                    if self._reconnect_attempts <= self._max_reconnect_attempts:
+                        wait_time = 2 ** self._reconnect_attempts
+                        yield {
+                            "type": "reconnecting",
+                            "attempt": self._reconnect_attempts,
+                            "wait_seconds": wait_time,
+                            "error": post["error"],
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                        await asyncio.sleep(wait_time)
+                        continue
+                    else:
+                        yield {
+                            "type": "error",
+                            "error": f"Max reconnect attempts reached: {post['error']}",
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                        break
 
-                # Identify which institution this matches
+                # Reset reconnect counter on success
+                self._reconnect_attempts = 0
+
+                # Deduplicate
+                tweet_id = post.get("id")
+                if tweet_id in self._seen_tweet_ids:
+                    continue
+                self._seen_tweet_ids.add(tweet_id)
+                if len(self._seen_tweet_ids) > self._max_seen_ids:
+                    # Remove oldest half
+                    self._seen_tweet_ids = set(list(self._seen_tweet_ids)[self._max_seen_ids // 2:])
+
+                # Identify matching institution
                 matching_institution = None
                 matching_rules = post.get("matching_rules", [])
 
@@ -2153,7 +2490,7 @@ class StreamMonitor:
                             matching_institution = self.monitored_institutions[inst_key]
                             break
 
-                # Quick risk assessment
+                # Risk signal detection
                 text = post.get("text", "").lower()
                 risk_signals = []
 
@@ -2162,38 +2499,90 @@ class StreamMonitor:
                         if keyword.lower() in text:
                             risk_signals.append(keyword)
 
-                # Determine urgency
+                # Calculate urgency based on signals + engagement
+                metrics = post.get("metrics", {})
+                total_engagement = metrics.get("total_engagement", 0)
+                author = post.get("author", {})
+
                 urgency = "low"
-                if len(risk_signals) >= 3:
+                urgency_score = len(risk_signals) * 10 + (total_engagement / 10)
+
+                if author.get("verified"):
+                    urgency_score += 20
+                if author.get("followers", 0) > 10000:
+                    urgency_score += 10
+
+                if urgency_score >= 50 or len(risk_signals) >= 3:
                     urgency = "high"
-                elif len(risk_signals) >= 1:
+                elif urgency_score >= 20 or len(risk_signals) >= 1:
                     urgency = "medium"
 
+                # Check volume spike
+                inst_name = matching_institution.get("name") if matching_institution else "unknown"
+                volume_status = self._check_volume_spike(inst_name)
+
+                # Build event
                 event = {
                     "type": "tweet",
-                    "id": post.get("id"),
+                    "id": tweet_id,
                     "text": post.get("text"),
+                    "url": post.get("url"),
                     "created_at": post.get("created_at"),
-                    "author_id": post.get("author_id"),
-                    "institution": matching_institution.get("name") if matching_institution else "unknown",
+                    "lang": post.get("lang"),
+                    "institution": inst_name,
                     "institution_type": matching_institution.get("type") if matching_institution else "unknown",
                     "risk_signals": risk_signals,
                     "urgency": urgency,
-                    "matching_rules": matching_rules,
+                    "urgency_score": round(urgency_score, 1),
+                    "metrics": metrics,
+                    "author": author,
+                    "hashtags": post.get("hashtags", []),
+                    "mentions": post.get("mentions", []),
+                    "volume_status": volume_status,
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
 
                 # Buffer for batch analysis
                 self.event_buffer.append(event)
+                if len(self.event_buffer) > 500:
+                    self.event_buffer = self.event_buffer[-250:]
 
                 yield event
 
-                # If high urgency, trigger immediate analysis
-                if urgency == "high":
+                # Trigger instant Grok analysis for high-urgency or high-engagement
+                if urgency == "high" or total_engagement >= self._high_engagement_threshold:
+                    grok_analysis = None
+                    if self.grok_client:
+                        try:
+                            grok_analysis = self.grok_client.analyze_single_tweet(
+                                inst_name,
+                                post.get("text", ""),
+                                {
+                                    "retweet_count": metrics.get("retweets", 0),
+                                    "reply_count": metrics.get("replies", 0),
+                                    "like_count": metrics.get("likes", 0),
+                                    "quote_count": metrics.get("quotes", 0)
+                                }
+                            )
+                        except Exception as e:
+                            grok_analysis = {"error": str(e)}
+
                     yield {
                         "type": "alert",
-                        "message": f"HIGH URGENCY: {matching_institution.get('name') if matching_institution else 'Unknown'} - {', '.join(risk_signals)}",
+                        "alert_reason": "high_urgency" if urgency == "high" else "high_engagement",
+                        "message": f"⚠️ {inst_name}: {', '.join(risk_signals) if risk_signals else 'High engagement detected'}",
                         "event": event,
+                        "grok_analysis": grok_analysis,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+
+                # Alert on volume spike
+                if volume_status.get("is_spiking"):
+                    yield {
+                        "type": "volume_spike",
+                        "message": f"📈 Volume spike: {inst_name} - {volume_status['tweets_in_window']} tweets in {volume_status['window_minutes']}min",
+                        "institution": inst_name,
+                        "volume_status": volume_status,
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     }
 
@@ -2211,13 +2600,21 @@ class StreamMonitor:
         """Stop the stream."""
         self._running = False
 
-    async def analyze_buffered_events(self) -> Dict:
-        """
-        Analyze buffered events with Grok for comprehensive risk assessment.
+    def get_stats(self) -> Dict:
+        """Get monitoring statistics."""
+        return {
+            "running": self._running,
+            "institutions": len(self.monitored_institutions),
+            "active_rules": len(self.active_rules),
+            "buffered_events": len(self.event_buffer),
+            "reconnect_attempts": self._reconnect_attempts,
+            "volume_trackers": {
+                k: len(v) for k, v in self._volume_tracker.items()
+            }
+        }
 
-        Returns:
-            Dict with analysis results
-        """
+    async def analyze_buffered_events(self) -> Dict:
+        """Analyze buffered events with Grok for comprehensive risk assessment."""
         if not self.event_buffer:
             return {"status": "no_events", "count": 0}
 
@@ -2234,11 +2631,15 @@ class StreamMonitor:
             if institution == "unknown":
                 continue
 
-            # Use GrokAnalysisClient for analysis
             try:
                 grok_client = GrokAnalysisClient()
                 if grok_client.is_available():
-                    context = f"Analyzing {len(events)} real-time events. Latest signals: {', '.join(events[-1].get('risk_signals', []))}"
+                    # Build context from recent events
+                    recent_signals = set()
+                    for e in events[-10:]:
+                        recent_signals.update(e.get('risk_signals', []))
+
+                    context = f"Analyzing {len(events)} real-time stream events. Risk signals detected: {', '.join(recent_signals)}"
                     analysis = grok_client.analyze_with_x_search(
                         institution,
                         additional_context=context
